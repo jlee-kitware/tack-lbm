@@ -31,3 +31,15 @@ Click Connect, then ask the assistant for the flow field or the residuals.
 | `monitors` | Residual and force history: `iteration`, `continuity`, `momentum_x/y/z`, `energy`, `drag`, `lift` |
 
 Catalyst Live sends extracts every 300 steps (`pipeline_live.py`).
+
+## Steering
+
+`steering.py` defines a Catalyst steering proxy (`LBMSteering`) with the Reynolds number and the
+collision model. The pipeline script registers it with `CreateSteerableParameters`; after each
+`catalyst_execute` the solver calls `catalyst_results` and applies changes made by a Live client.
+A Reynolds change only updates a runtime kernel argument. A collision change selects another
+kernel specialization, which Tack compiles on first use and caches on disk.
+
+The CFD assistant loads the same proxy definition (`CATALYST_LIVE_PROXIES`, set by `run_live.sh`)
+and exposes the parameters as a Re field and BGK/TRT/LES buttons in its header, and to the chat
+through `get_simulation_parameters` and `set_simulation_parameter`.

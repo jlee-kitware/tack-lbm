@@ -18,6 +18,7 @@ systemd-run --user --unit tack-lbm --working-directory="$HERE" \
   "$HERE/.venv/bin/python" -u run_lbm.py "$@"
 
 systemd-run --user --unit cfd-app --working-directory="$CFD" --setenv=TRAME_DEFAULT_HOST=0.0.0.0 \
+  --setenv=CATALYST_LIVE_PROXIES="$HERE/steering.xml" \
   --setenv=LD_LIBRARY_PATH="$HOME/gitsync/anari_install/lib" \
   -p StandardOutput=truncate:"$LOGS/app_8080.log" -p StandardError=inherit \
   "$PV_BUILD/bin/pvpython" --force-offscreen-rendering --venv .venv cfd_chat.py --live --server --timeout=0

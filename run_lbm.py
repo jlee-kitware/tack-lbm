@@ -18,19 +18,23 @@ import catalyst
 import conduit
 
 from lbm import Solver
+from steering import COLLISION_CODES, COLLISION_NAMES, read_steering, write_proxy_xml
 
-MONITOR_NAMES = ("continuity", "momentum_x", "momentum_y", "momentum_z", "energy", "drag", "lift")
+MONITOR_NAMES = ("continuity", "momentum_x", "momentum_y", "momentum_z", "energy", "drag", "lift",
+                 "reynolds", "collision")
 
 
 class CatalystAdaptor:
-    def __init__(self, script, solver, paraview_lib):
+    def __init__(self, script, solver, paraview_lib, proxy_xml):
         node = conduit.Node()
         node["catalyst/scripts/script/filename"] = script
+        node["catalyst/proxies/steering"] = proxy_xml
         node["catalyst_load/implementation"] = "paraview"
         node["catalyst_load/search_paths/paraview"] = paraview_lib
         catalyst.initialize(node)
         self.solver = solver
         self.history = {name: [] for name in ("iteration", *MONITOR_NAMES)}
+        self.steered = {"reynolds": solver.reynolds, "collision": float(COLLISION_CODES[solver.collision_name])}
 
     def execute(self, step, time_value, monitors):
         self.history["iteration"].append(float(step))
@@ -89,6 +93,22 @@ class CatalystAdaptor:
             fld["values"].set(np.asarray(values))
         catalyst.execute(node)
 
+    def steer(self):
+        """Apply Reynolds number and collision model changes made by a Live client."""
+        results = conduit.Node()
+        catalyst.results(results)
+        values = read_steering(results)
+        s = self.solver
+        changed = {k: v for k, v in values.items() if abs(v - self.steered.get(k, v)) > 1e-9}
+        if not changed:
+            return
+        self.steered.update(changed)
+        collision = COLLISION_NAMES.get(int(self.steered["collision"]), s.collision_name)
+        old = (s.reynolds, s.collision_name)
+        s.set_physics(collision, self.steered["reynolds"])
+        note = "; the next step compiles that kernel if it is new" if collision != old[1] else ""
+        print(f"[steer] Re {old[0]:g} -> {s.reynolds:g}, collision {old[1]} -> {collision}{note}", flush=True)
+
     def finalize(self):
         catalyst.finalize(conduit.Node())
 
@@ -106,12 +126,15 @@ def main():
     parser.add_argument("--stride", type=int, default=2, help="grid channel subsampling (1 = full resolution)")
     parser.add_argument("--max-sps", type=float, default=0, help="throttle steps per second (0 = full speed)")
     parser.add_argument("--catalyst-lib", default=os.path.join(pv_build, "lib", "catalyst"))
+    parser.add_argument("--steering-xml", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "steering.xml"),
+                        help="where to write the steering proxy definition the Live client also loads")
     args = parser.parse_args()
 
     nx, ny, nz = args.size
     solver = Solver(nx, ny, nz, collision=args.collision, obstacle=args.obstacle, reynolds=args.re,
                     stride=args.stride)
-    adaptor = CatalystAdaptor(os.path.abspath(args.script), solver, args.catalyst_lib)
+    xml = write_proxy_xml(args.steering_xml, args.re, args.collision)
+    adaptor = CatalystAdaptor(os.path.abspath(args.script), solver, args.catalyst_lib, xml)
     print(f"[tack-lbm] {nx}x{ny}x{nz} D3Q19, {args.collision}, {args.obstacle}, Re={args.re}", flush=True)
 
     running = True
@@ -130,8 +153,11 @@ def main():
             solver.step()
         solver.step(report=True)
         monitors = solver.monitors(args.interval)
+        monitors["reynolds"] = solver.reynolds
+        monitors["collision"] = float(COLLISION_CODES[solver.collision_name])
         step = solver.step_count
         adaptor.execute(step, step * solver.u0 / solver.diameter, monitors)
+        adaptor.steer()
         now = time.perf_counter()
         if args.max_sps > 0:
             wait = step / args.max_sps - (now - t_start)
