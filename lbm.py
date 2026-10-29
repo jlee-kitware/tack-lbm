@@ -55,23 +55,57 @@ class BGK:
             post[q] = f[q] - self.omega * (f[q] - lat.feq(q, rho, ux, uy, uz))
 
 
+@tack.func
+def smagorinsky_tau(lat, f, rho, ux, uy, uz, tau0, cs):
+    """Relaxation time with a Smagorinsky eddy viscosity from the local non-equilibrium stress."""
+    pxx = 0.0
+    pyy = 0.0
+    pzz = 0.0
+    pxy = 0.0
+    pxz = 0.0
+    pyz = 0.0
+    for q in range(lat.Q):
+        neq = f[q] - lat.feq(q, rho, ux, uy, uz)
+        ex = float(lat.cx[q])
+        ey = float(lat.cy[q])
+        ez = float(lat.cz[q])
+        pxx += ex * ex * neq
+        pyy += ey * ey * neq
+        pzz += ez * ez * neq
+        pxy += ex * ey * neq
+        pxz += ex * ez * neq
+        pyz += ey * ez * neq
+    pi = sqrt(pxx * pxx + pyy * pyy + pzz * pzz + 2.0 * (pxy * pxy + pxz * pxz + pyz * pyz))
+    return 0.5 * (tau0 + sqrt(tau0 * tau0 + 25.456 * cs * cs * pi / rho))
+
+
 @tack.device_class
 class TRT:
-    magic = 0.25
+    """Two-relaxation-time collision with a Smagorinsky subgrid viscosity.
+
+    Plain TRT puts the odd moments' relaxation rate near zero as the viscosity
+    approaches its lower limit and goes unstable on this case beyond Re ~100.
+    The subgrid viscosity keeps the even rate away from 2, and the magic
+    parameter 3/16 places the bounce-back wall halfway between nodes for any
+    viscosity.
+    """
+    magic = 0.1875
+    cs = 0.16
 
     def __init__(self, nu):
-        self.omega_p = 1.0 / (3.0 * nu + 0.5)
-        lam_p = 1.0 / self.omega_p - 0.5
-        self.omega_m = 1.0 / (self.magic / lam_p + 0.5)
+        self.tau0 = 3.0 * nu + 0.5
 
     @tack.func
     def collide(self, lat, f, post, rho, ux, uy, uz):
+        tau = smagorinsky_tau(lat, f, rho, ux, uy, uz, self.tau0, self.cs)
+        omega_p = 1.0 / tau
+        omega_m = 1.0 / (self.magic / (tau - 0.5) + 0.5)
         for q in range(lat.Q):
             o = lat.opp[q]
             eq = lat.feq(q, rho, ux, uy, uz)
             eo = lat.feq(o, rho, ux, uy, uz)
-            post[q] = (f[q] - self.omega_p * (0.5 * (f[q] + f[o]) - 0.5 * (eq + eo))
-                       - self.omega_m * (0.5 * (f[q] - f[o]) - 0.5 * (eq - eo)))
+            post[q] = (f[q] - omega_p * (0.5 * (f[q] + f[o]) - 0.5 * (eq + eo))
+                       - omega_m * (0.5 * (f[q] - f[o]) - 0.5 * (eq - eo)))
 
 
 @tack.device_class
@@ -83,26 +117,7 @@ class SmagorinskyLES:
 
     @tack.func
     def collide(self, lat, f, post, rho, ux, uy, uz):
-        pxx = 0.0
-        pyy = 0.0
-        pzz = 0.0
-        pxy = 0.0
-        pxz = 0.0
-        pyz = 0.0
-        for q in range(lat.Q):
-            neq = f[q] - lat.feq(q, rho, ux, uy, uz)
-            ex = float(lat.cx[q])
-            ey = float(lat.cy[q])
-            ez = float(lat.cz[q])
-            pxx += ex * ex * neq
-            pyy += ey * ey * neq
-            pzz += ez * ez * neq
-            pxy += ex * ey * neq
-            pxz += ex * ez * neq
-            pyz += ey * ez * neq
-        pi = sqrt(pxx * pxx + pyy * pyy + pzz * pzz + 2.0 * (pxy * pxy + pxz * pxz + pyz * pyz))
-        tau = 0.5 * (self.tau0 + sqrt(self.tau0 * self.tau0 + 25.456 * self.cs * self.cs * pi / rho))
-        omega = 1.0 / tau
+        omega = 1.0 / smagorinsky_tau(lat, f, rho, ux, uy, uz, self.tau0, self.cs)
         for q in range(lat.Q):
             post[q] = f[q] - omega * (f[q] - lat.feq(q, rho, ux, uy, uz))
 
@@ -228,11 +243,17 @@ def lbm_step(lat, phys, geo, flow, diag, f_in, f_out):
         uy = fluid * jy / rho
         uz = fluid * jz / rho
         phys.collide(lat, f, post, rho, ux, uy, uz)
+        # The sponge moves density and velocity toward the inflow state and damps the
+        # non-equilibrium part, so the result stays consistent with an equilibrium.
         t = max(0.0, (float(x) - flow.sponge_start) / (float(lat.nx) - flow.sponge_start))
         sigma = max(here, flow.sponge_strength * t * t)
+        rho_s = rho + sigma * (1.0 - rho)
+        ux_s = ux + sigma * (flow.u0 * fluid - ux)
+        uy_s = (1.0 - sigma) * uy
+        uz_s = (1.0 - sigma) * uz
         for q in range(lat.Q):
-            target = lat.feq(q, 1.0, flow.u0 * fluid, 0.0, 0.0)
-            f_out[q * lat.n + idx] = post[q] + sigma * (target - post[q])
+            neq = post[q] - lat.feq(q, rho, ux, uy, uz)
+            f_out[q * lat.n + idx] = lat.feq(q, rho_s, ux_s, uy_s, uz_s) + (1.0 - sigma) * neq
         if diag.enabled == 1:
             p = (rho - 1.0) / 3.0
             ke = 0.5 * rho * (ux * ux + uy * uy + uz * uz)
@@ -298,7 +319,7 @@ class Solver:
         self.lat = D3Q19(nx, ny, nz)
         self.u0, self.diameter = u0, diameter
         self.step_count = 0
-        self.flow = Flow(u0, 0.82 * nx, 0.25)
+        self.flow = Flow(u0, 0.75 * nx, 1.0)
         self.set_obstacle(obstacle)
         self.set_physics(collision, reynolds)
         n = self.lat.n

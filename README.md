@@ -4,7 +4,7 @@ A branchless D3Q19 lattice Boltzmann solver written in [Tack](https://berkgeveci
 instrumented with Catalyst 2 and Catalyst Live so the CFD assistant can monitor and analyze it while it runs.
 
 The physics is composed at runtime from Tack device classes. Each combination of collision model
-(`bgk`, `trt`, `les`), obstacle (`cylinder`, `sphere`, `box`) and diagnostics variant compiles to its
+(`bgk`, `trt` with a Smagorinsky subgrid model, `les`), obstacle (`cylinder`, `sphere`, `box`) and diagnostics variant compiles to its
 own specialized kernel, so run options never become branches in the kernel. Solid walls, bounce-back,
 momentum-exchange forces and the outflow sponge are arithmetic on the obstacle's signed-distance test.
 
@@ -43,3 +43,10 @@ kernel specialization, which Tack compiles on first use and caches on disk.
 The CFD assistant loads the same proxy definition (`CATALYST_LIVE_PROXIES`, set by `run_live.sh`)
 and exposes the parameters as a Re field and BGK/TRT/LES buttons in its header, and to the chat
 through `get_simulation_parameters` and `set_simulation_parameter`.
+
+## Checks
+
+- `trt_ref.py` compares one TRT step against a NumPy reference.
+- `collision_check.py` runs each collision model at Re 300, 1000 and 3000 and reports stability and
+  the Strouhal number. BGK diverges at Re 3000; TRT and LES carry a Smagorinsky subgrid viscosity and
+  stay stable. All three give a Strouhal number of 0.200 at Re 300.

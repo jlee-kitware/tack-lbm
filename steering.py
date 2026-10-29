@@ -27,7 +27,7 @@ PROXY_XML = """<ServerManagerConfiguration>
                          number_of_elements="1" default_values="{collision}">
         <EnumerationDomain name="enum">
           <Entry value="0" text="BGK" />
-          <Entry value="1" text="TRT" />
+          <Entry value="1" text="TRT with LES" />
           <Entry value="2" text="Smagorinsky LES" />
         </EnumerationDomain>
         <Documentation>Collision operator; each choice is a separately JIT-compiled Tack kernel.</Documentation>
