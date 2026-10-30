@@ -25,7 +25,8 @@ MONITOR_NAMES = ("continuity", "momentum_x", "momentum_y", "momentum_z", "energy
 
 
 class CatalystAdaptor:
-    def __init__(self, script, solver, paraview_lib, proxy_xml):
+    def __init__(self, script, solver, paraview_lib, proxy_xml, monitor_names=MONITOR_NAMES,
+                 extra_channels=None):
         node = conduit.Node()
         node["catalyst/scripts/script/filename"] = script
         node["catalyst/proxies/steering"] = proxy_xml
@@ -33,13 +34,15 @@ class CatalystAdaptor:
         node["catalyst_load/search_paths/paraview"] = paraview_lib
         catalyst.initialize(node)
         self.solver = solver
-        self.history = {name: [] for name in ("iteration", *MONITOR_NAMES)}
+        self.monitor_names = monitor_names
+        self.extra_channels = extra_channels
+        self.history = {name: [] for name in ("iteration", *monitor_names)}
         self.steered = {"reynolds": solver.reynolds, "collision": float(COLLISION_CODES[solver.collision_name])}
 
     def execute(self, step, time_value, monitors):
         self.history["iteration"].append(float(step))
-        for name in MONITOR_NAMES:
-            self.history[name].append(monitors[name])
+        for name in self.monitor_names:
+            self.history[name].append(monitors.get(name, np.nan))
         s = self.solver
         node = conduit.Node()
         node["catalyst/state/timestep"] = step
@@ -68,7 +71,9 @@ class CatalystAdaptor:
         velocity["values/x"].set_external(f["ux"].numpy)
         velocity["values/y"].set_external(f["uy"].numpy)
         velocity["values/z"].set_external(f["uz"].numpy)
-        for name, key in (("pressure", "p"), ("speed", "vmag")):
+        for name, key in (("pressure", "p"), ("speed", "vmag"), ("temperature", "temp")):
+            if key not in f:
+                continue
             fld = mesh[f"fields/{name}"]
             fld["association"] = "vertex"
             fld["topology"] = "mesh"
@@ -91,6 +96,8 @@ class CatalystAdaptor:
             fld["association"] = "vertex"
             fld["topology"] = "points"
             fld["values"].set(np.asarray(values))
+        if self.extra_channels:
+            self.extra_channels(node["catalyst/channels"])
         catalyst.execute(node)
 
     def steer(self):

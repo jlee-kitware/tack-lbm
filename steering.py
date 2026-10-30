@@ -32,15 +32,25 @@ PROXY_XML = """<ServerManagerConfiguration>
         </EnumerationDomain>
         <Documentation>Collision operator; each choice is a separately JIT-compiled Tack kernel.</Documentation>
       </IntVectorProperty>
+{extra}
     </SourceProxy>
   </ProxyGroup>
 </ServerManagerConfiguration>
 """
 
+POWER_XML = """      <DoubleVectorProperty name="Power" label="Heater power" command="SetTuple1Double"
+                            use_index="1" clean_command="Clear" initial_string="power"
+                            number_of_elements_per_command="1" repeat_command="1"
+                            number_of_elements="1" default_values="{power}">
+        <DoubleRangeDomain name="range" min="0" max="500" />
+        <Documentation>Heat released by the chip under the heat sink's base, in lattice units.</Documentation>
+      </DoubleVectorProperty>"""
 
-def write_proxy_xml(path, reynolds, collision):
+
+def write_proxy_xml(path, reynolds, collision, power=None):
+    extra = POWER_XML.format(power=power) if power is not None else ""
     with open(path, "w") as f:
-        f.write(PROXY_XML.format(reynolds=reynolds, collision=COLLISION_CODES[collision]))
+        f.write(PROXY_XML.format(reynolds=reynolds, collision=COLLISION_CODES[collision], extra=extra))
     return path
 
 
@@ -52,7 +62,7 @@ def read_steering(results):
     data = results["catalyst/steerable/data"]
     for i in range(data.number_of_children()):
         part = data.child(i)
-        for key in ("reynolds", "collision"):
+        for key in ("reynolds", "collision", "power"):
             for path in (f"state/fields/{key}", f"fields/{key}/values"):
                 if part.has_path(path):
                     v = part[path]

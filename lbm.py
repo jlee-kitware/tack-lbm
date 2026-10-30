@@ -384,15 +384,15 @@ def lbm_step(lat, phys, geo, flow, diag, f_in, f_out, heat, g_in, g_out):
                 g_out[q * lat.n + idx] = heat.geq(q, temp_s, ux_s, uy_s, uz_s) + (1.0 - sigma) * (post_g - eq)
             if diag.enabled == 1:
                 heat.temp[idx] = fluid * temp + here * heat.t_solid[idx]
-                # Heat flux from each sink face into this fluid cell, credited to the solid voxel.
+                # Each wetted sink face gets this fluid cell's temperature (summed per solid voxel);
+                # the solid takes the exchange h (T_s - T_f) implicitly.
                 for q in range(1, heat.Q):
                     xs = (x - heat.cx[q] + lat.nx) % lat.nx
                     ys = (y - heat.cy[q] + lat.ny) % lat.ny
                     zs = (z - heat.cz[q] + lat.nz) % lat.nz
                     nidx = (zs * lat.ny + ys) * lat.nx + xs
                     hot = geo.sink(xs, ys, zs)
-                    flux = fluid * hot * 2.0 * alpha * (heat.t_solid[nidx] - temp)
-                    tack.atomic_add(heat.q_solid, nidx, flux)
+                    tack.atomic_add(heat.q_solid, nidx, fluid * hot * temp)
         if diag.enabled == 1:
             p = (rho - 1.0) / 3.0
             ke = 0.5 * rho * (ux * ux + uy * uy + uz * uz)
@@ -549,6 +549,4 @@ class Solver:
         scale = 0.5 * self.u0 * self.u0 * self.diameter * self.nz
         res["drag"] = total["fx"] / scale
         res["lift"] = total["fy"] / scale
-        if self.heat_enabled:
-            res["heat_flux"] = float(self.heat_fields["q_solid"].numpy.sum(dtype=np.float64))
         return res
