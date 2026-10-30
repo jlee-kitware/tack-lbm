@@ -80,22 +80,10 @@ class CatalystAdaptor:
             fld["values"].set_external(f[key].numpy)
 
         mon = node["catalyst/channels/monitors"]
-        mon["type"] = "mesh"
-        data = mon["data"]
-        n = len(self.history["iteration"])
-        data["coordsets/coords/type"] = "explicit"
-        data["coordsets/coords/values/x"].set(np.asarray(self.history["iteration"]))
-        data["coordsets/coords/values/y"].set(np.asarray(self.history["continuity"]))
-        data["coordsets/coords/values/z"].set(np.zeros(n))
-        data["topologies/points/type"] = "unstructured"
-        data["topologies/points/coordset"] = "coords"
-        data["topologies/points/elements/shape"] = "point"
-        data["topologies/points/elements/connectivity"].set(np.arange(n, dtype=np.int32))
+        mon["type"] = "table"
+        columns = mon["data/values"]
         for name, values in self.history.items():
-            fld = data[f"fields/{name}"]
-            fld["association"] = "vertex"
-            fld["topology"] = "points"
-            fld["values"].set(np.asarray(values))
+            columns[name].set(np.asarray(values))
         if self.extra_channels:
             self.extra_channels(node["catalyst/channels"])
         catalyst.execute(node)
