@@ -17,6 +17,13 @@ CY = [0, 0, 0, 1, -1, 0, 0, 1, -1, -1, 1, 0, 0, 0, 0, 1, -1, 1, -1]
 CZ = [0, 0, 0, 0, 0, 1, -1, 0, 0, 0, 0, 1, -1, -1, 1, 1, -1, -1, 1]
 W = [1 / 3] + [1 / 18] * 6 + [1 / 36] * 12
 
+# D3Q7 for temperature: rest plus the six faces, c_s^2 = 1/4.
+CX7 = [0, 1, -1, 0, 0, 0, 0]
+CY7 = [0, 0, 0, 1, -1, 0, 0]
+CZ7 = [0, 0, 0, 0, 0, 1, -1]
+W7 = [1 / 4] + [1 / 8] * 6
+OPP7 = [0, 2, 1, 4, 3, 6, 5]
+
 
 def _opposite():
     return [next(p for p in range(19) if (CX[p], CY[p], CZ[p]) == (-CX[q], -CY[q], -CZ[q]))
@@ -53,6 +60,7 @@ class BGK:
     def collide(self, lat, f, post, rho, ux, uy, uz):
         for q in range(lat.Q):
             post[q] = f[q] - self.omega * (f[q] - lat.feq(q, rho, ux, uy, uz))
+        return 1.0 / self.omega
 
 
 @tack.func
@@ -106,6 +114,7 @@ class TRT:
             eo = lat.feq(o, rho, ux, uy, uz)
             post[q] = (f[q] - omega_p * (0.5 * (f[q] + f[o]) - 0.5 * (eq + eo))
                        - omega_m * (0.5 * (f[q] - f[o]) - 0.5 * (eq - eo)))
+        return tau
 
 
 @tack.device_class
@@ -117,9 +126,11 @@ class SmagorinskyLES:
 
     @tack.func
     def collide(self, lat, f, post, rho, ux, uy, uz):
-        omega = 1.0 / smagorinsky_tau(lat, f, rho, ux, uy, uz, self.tau0, self.cs)
+        tau = smagorinsky_tau(lat, f, rho, ux, uy, uz, self.tau0, self.cs)
+        omega = 1.0 / tau
         for q in range(lat.Q):
             post[q] = f[q] - omega * (f[q] - lat.feq(q, rho, ux, uy, uz))
+        return tau
 
 
 # Obstacles as inlined signed-distance tests; solid() is 1.0 inside, 0.0 outside.
@@ -135,6 +146,10 @@ class Cylinder:
         dy = float(y) - self.y
         return 1.0 if dx * dx + dy * dy < self.r * self.r else 0.0
 
+    @tack.func
+    def sink(self, x, y, z):
+        return self.solid(x, y, z)
+
 
 @tack.device_class
 class Sphere:
@@ -148,6 +163,10 @@ class Sphere:
         dz = float(z) - self.z
         return 1.0 if dx * dx + dy * dy + dz * dz < self.r * self.r else 0.0
 
+    @tack.func
+    def sink(self, x, y, z):
+        return self.solid(x, y, z)
+
 
 @tack.device_class
 class Box:
@@ -160,6 +179,90 @@ class Box:
         d = max(abs(float(x) - self.x) - self.hx, abs(float(y) - self.y) - self.hy,
                 abs(float(z) - self.z) - self.hz)
         return 1.0 if d < 0.0 else 0.0
+
+    @tack.func
+    def sink(self, x, y, z):
+        return self.solid(x, y, z)
+
+
+@tack.device_class
+class HeatSink:
+    """A finned heat sink on the floor of a duct.
+
+    The base plate and fins (parallel to the flow, along x) are the sink; the
+    duct's floor and ceiling (y = 0 and y = ny - 1) are adiabatic walls. All
+    sizes are in lattice cells.
+    """
+
+    def __init__(self, ny, x0, length, z0, width, base, fin_height, fin_thickness, fin_pitch):
+        self.ny = ny
+        self.x0, self.x1 = float(x0), float(x0 + length)
+        self.z0, self.z1 = float(z0), float(z0 + width)
+        self.y_base = 1.0 + base
+        self.y_top = 1.0 + base + fin_height
+        self.fin_thickness = fin_thickness
+        self.fin_pitch = fin_pitch
+
+    @tack.func
+    def sink(self, x, y, z):
+        fx = float(x)
+        fy = float(y)
+        fz = float(z)
+        inside = (1.0 if fx >= self.x0 else 0.0) * (1.0 if fx < self.x1 else 0.0) \
+            * (1.0 if fz >= self.z0 else 0.0) * (1.0 if fz < self.z1 else 0.0) \
+            * (1.0 if fy >= 1.0 else 0.0)
+        base = 1.0 if fy < self.y_base else 0.0
+        fin = (1.0 if fy < self.y_top else 0.0) \
+            * (1.0 if (z - int(self.z0)) % self.fin_pitch < self.fin_thickness else 0.0)
+        return inside * max(base, fin)
+
+    @tack.func
+    def solid(self, x, y, z):
+        wall = max(1.0 if y <= 0 else 0.0, 1.0 if y >= self.ny - 1 else 0.0)
+        return max(wall, self.sink(x, y, z))
+
+
+# Thermal variants. ``enabled`` is a class constant, so runs without heat
+# compile without the temperature distribution at all.
+
+@tack.device_class
+class NoHeat:
+    enabled = 0
+    Q = 7
+    pr_t = 0.85
+
+    def __init__(self, arrays):
+        self.cx = arrays["cx"]
+        self.cy = arrays["cy"]
+        self.cz = arrays["cz"]
+        self.w = arrays["w"]
+        self.opp = arrays["opp"]
+        self.t_solid = arrays["t_solid"]
+        self.q_solid = arrays["q_solid"]
+        self.temp = arrays["temp"]
+        self.alpha = 0.0
+        self.nu = 0.0
+
+    @tack.func
+    def geq(self, q, temp, ux, uy, uz):
+        cu = float(self.cx[q]) * ux + float(self.cy[q]) * uy + float(self.cz[q]) * uz
+        return self.w[q] * temp * (1.0 + 4.0 * cu)
+
+    @tack.func
+    def diffusivity(self, tau):
+        """Molecular plus subgrid diffusivity, with turbulent Prandtl number pr_t."""
+        return self.alpha + max(0.0, (tau - 0.5) / 3.0 - self.nu) / self.pr_t
+
+
+@tack.device_class
+class Heat(NoHeat):
+    enabled = 1
+    pr_t = 0.85
+
+    def __init__(self, arrays, alpha, nu):
+        super().__init__(arrays)
+        self.alpha = alpha
+        self.nu = nu
 
 
 # Diagnostics variants. The flag is a class constant, so the step that skips
@@ -205,7 +308,7 @@ def lbm_init(lat, geo, flow, f, seed_amp):
 
 
 @tack.kernel
-def lbm_step(lat, phys, geo, flow, diag, f_in, f_out):
+def lbm_step(lat, phys, geo, flow, diag, f_in, f_out, heat, g_in, g_out):
     for idx in range(lat.n):
         x = idx % lat.nx
         y = (idx // lat.nx) % lat.ny
@@ -242,7 +345,7 @@ def lbm_step(lat, phys, geo, flow, diag, f_in, f_out):
         ux = fluid * jx / rho
         uy = fluid * jy / rho
         uz = fluid * jz / rho
-        phys.collide(lat, f, post, rho, ux, uy, uz)
+        tau = phys.collide(lat, f, post, rho, ux, uy, uz)
         # The sponge moves density and velocity toward the inflow state and damps the
         # non-equilibrium part, so the result stays consistent with an equilibrium.
         t = max(0.0, (float(x) - flow.sponge_start) / (float(lat.nx) - flow.sponge_start))
@@ -254,6 +357,42 @@ def lbm_step(lat, phys, geo, flow, diag, f_in, f_out):
         for q in range(lat.Q):
             neq = post[q] - lat.feq(q, rho, ux, uy, uz)
             f_out[q * lat.n + idx] = lat.feq(q, rho_s, ux_s, uy_s, uz_s) + (1.0 - sigma) * neq
+        if heat.enabled == 1:
+            # Temperature: D3Q7 advection-diffusion. Sink walls hold the solid's
+            # temperature (anti-bounce-back); duct walls are adiabatic (bounce-back).
+            g = tack.local_array(tack.f32, heat.Q)
+            temp = 0.0
+            for q in range(heat.Q):
+                o = heat.opp[q]
+                xs = (x - heat.cx[q] + lat.nx) % lat.nx
+                ys = (y - heat.cy[q] + lat.ny) % lat.ny
+                zs = (z - heat.cz[q] + lat.nz) % lat.nz
+                nidx = (zs * lat.ny + ys) * lat.nx + xs
+                wall = geo.solid(xs, ys, zs)
+                hot = geo.sink(xs, ys, zs)
+                pulled = g_in[q * lat.n + nidx]
+                bounced = g_in[o * lat.n + idx]
+                at_wall = bounced * (1.0 - 2.0 * hot) + hot * 2.0 * heat.w[q] * heat.t_solid[nidx]
+                g[q] = pulled + wall * (at_wall - pulled)
+                temp += g[q]
+            alpha = heat.diffusivity(tau)
+            omega_g = 1.0 / (4.0 * alpha + 0.5)
+            temp_s = (1.0 - sigma) * temp
+            for q in range(heat.Q):
+                eq = heat.geq(q, temp, ux, uy, uz)
+                post_g = g[q] - omega_g * (g[q] - eq)
+                g_out[q * lat.n + idx] = heat.geq(q, temp_s, ux_s, uy_s, uz_s) + (1.0 - sigma) * (post_g - eq)
+            if diag.enabled == 1:
+                heat.temp[idx] = fluid * temp + here * heat.t_solid[idx]
+                # Heat flux from each sink face into this fluid cell, credited to the solid voxel.
+                for q in range(1, heat.Q):
+                    xs = (x - heat.cx[q] + lat.nx) % lat.nx
+                    ys = (y - heat.cy[q] + lat.ny) % lat.ny
+                    zs = (z - heat.cz[q] + lat.nz) % lat.nz
+                    nidx = (zs * lat.ny + ys) * lat.nx + xs
+                    hot = geo.sink(xs, ys, zs)
+                    flux = fluid * hot * 2.0 * alpha * (heat.t_solid[nidx] - temp)
+                    tack.atomic_add(heat.q_solid, nidx, flux)
         if diag.enabled == 1:
             p = (rho - 1.0) / 3.0
             ke = 0.5 * rho * (ux * ux + uy * uy + uz * uz)
@@ -313,7 +452,8 @@ class Solver:
     OUTPUT = ("ux", "uy", "uz", "p", "vmag")
 
     def __init__(self, nx=384, ny=128, nz=64, collision="les", obstacle="cylinder",
-                 reynolds=300.0, u0=0.08, diameter=24.0, device="cuda", stride=1):
+                 reynolds=300.0, u0=0.08, diameter=24.0, device="cuda", stride=1,
+                 heat=False, prandtl=0.7):
         tack.set_default_device(device)
         self.nx, self.ny, self.nz = nx, ny, nz
         self.lat = D3Q19(nx, ny, nz)
@@ -328,27 +468,54 @@ class Solver:
         views = {name: a.tack for name, a in self.fields.items()}
         self.quiet = Quiet(views)
         self.report = Report(views)
+        self.heat_enabled = heat
+        self.prandtl = prandtl
+        self._setup_heat(n)
         self.stride = stride
         self.out_dims = tuple((d + stride - 1) // stride for d in (nx, ny, nz))
+        outputs = self.OUTPUT + (("temp",) if heat else ())
         if stride > 1:
             m = self.out_dims[0] * self.out_dims[1] * self.out_dims[2]
-            self.output = {name: ManagedArray(m) for name in self.OUTPUT}
+            self.output = {name: ManagedArray(m) for name in outputs}
         else:
-            self.output = {name: self.fields[name] for name in self.OUTPUT}
+            self.output = {name: self.heat_fields.get(name) or self.fields[name] for name in outputs}
         lbm_init(self.lat, self.geo, self.flow, self.f[0], 0.05)
         self.step(report=True)
         self.step_count = 0
 
+    def _setup_heat(self, n):
+        small = 1 if not self.heat_enabled else n
+        self.heat_fields = {name: ManagedArray(small) for name in ("t_solid", "q_solid", "temp")}
+        arrays = {
+            "cx": tack.array(np.array(CX7, np.int32)), "cy": tack.array(np.array(CY7, np.int32)),
+            "cz": tack.array(np.array(CZ7, np.int32)), "w": tack.array(np.array(W7, np.float32)),
+            "opp": tack.array(np.array(OPP7, np.int32)),
+            **{name: a.tack for name, a in self.heat_fields.items()},
+        }
+        self.g = [tack.zeros((7 * small,)), tack.zeros((7 * small,))]
+        if self.heat_enabled:
+            self.heat = Heat(arrays, self.nu / self.prandtl, self.nu)
+        else:
+            self.heat = NoHeat(arrays)
+        self._heat_arrays = arrays
+
+    def set_wall_temperature(self, value):
+        """Fill every solid voxel's temperature (until the solid solver provides one)."""
+        self.heat_fields["t_solid"].numpy[:] = value
+
     def update_output(self):
         if self.stride > 1:
             mx, my, mz = self.out_dims
-            for name in self.OUTPUT:
-                coarsen(self.lat, self.stride, self.fields[name].tack, self.output[name].tack, mx, my, mz)
+            for name in self.output:
+                src = self.heat_fields[name] if name == "temp" else self.fields[name]
+                coarsen(self.lat, self.stride, src.tack, self.output[name].tack, mx, my, mz)
 
     def set_physics(self, collision, reynolds):
         self.collision_name, self.reynolds = collision, float(reynolds)
-        nu = self.u0 * self.diameter / self.reynolds
-        self.phys = COLLISIONS[collision](nu)
+        self.nu = self.u0 * self.diameter / self.reynolds
+        self.phys = COLLISIONS[collision](self.nu)
+        if getattr(self, "heat_enabled", False):
+            self.heat = Heat(self._heat_arrays, self.nu / self.prandtl, self.nu)
 
     def set_obstacle(self, kind):
         nx, ny, nz, r = self.nx, self.ny, self.nz, self.diameter / 2
@@ -356,12 +523,18 @@ class Solver:
         self.obstacle_name = kind
         self.geo = {"cylinder": lambda: Cylinder(x0, y0, r),
                     "sphere": lambda: Sphere(x0, y0, 0.5 * nz, r),
-                    "box": lambda: Box(x0, y0, 0.5 * nz, r, r, 0.3 * nz)}[kind]()
+                    "box": lambda: Box(x0, y0, 0.5 * nz, r, r, 0.3 * nz),
+                    "heatsink": lambda: HeatSink(ny, int(0.2 * nx), int(0.3 * nx), int(0.125 * nz),
+                                                 int(0.75 * nz), 6, int(0.45 * ny), 4, 12)}[kind]()
 
     def step(self, report=False):
         diag = self.report if report else self.quiet
-        lbm_step(self.lat, self.phys, self.geo, self.flow, diag, self.f[0], self.f[1])
+        if report and self.heat_enabled:
+            self.heat_fields["q_solid"].tack.fill(0.0)
+        lbm_step(self.lat, self.phys, self.geo, self.flow, diag, self.f[0], self.f[1],
+                 self.heat, self.g[0], self.g[1])
         self.f.reverse()
+        self.g.reverse()
         self.step_count += 1
 
     def monitors(self, interval):
@@ -376,4 +549,6 @@ class Solver:
         scale = 0.5 * self.u0 * self.u0 * self.diameter * self.nz
         res["drag"] = total["fx"] / scale
         res["lift"] = total["fy"] / scale
+        if self.heat_enabled:
+            res["heat_flux"] = float(self.heat_fields["q_solid"].numpy.sum(dtype=np.float64))
         return res
