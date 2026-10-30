@@ -5,6 +5,8 @@ from paraview.simple import CreateSteerableParameters
 options = Options()
 options.EnableCatalystLive = 1
 options.CatalystLiveURL = "localhost:22222"
+# Hold the run at its first step until the assistant connects.
+options.CatalystLiveWaitForClient = 1
 options.CatalystLiveTrigger = "TimeStep"
 options.CatalystLiveTrigger.UseStartTimeStep = 0
 options.CatalystLiveTrigger.Frequency = 300
