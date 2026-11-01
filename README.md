@@ -35,7 +35,7 @@ Catalyst Live sends extracts every 300 steps (`pipeline_live.py`).
 ## Derived fields
 
 The grid channel also carries fields computed from VTK calculator expressions with
-[tack-expr](../tack-expr), each compiled to one Tack kernel: `vorticity` (`mag(curl(velocity))`)
+[tack-expr](../tack/packages/tack-expr), each compiled to one Tack kernel: `vorticity` (`mag(curl(velocity))`)
 and `q_criterion` (`qcrit(velocity)`) by default, at cell centers. Add more with `--derive`:
 
 ```bash
