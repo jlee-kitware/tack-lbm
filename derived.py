@@ -69,6 +69,7 @@ class DerivedFields:
         self.steered = {}
         self.request = ""
         self.error_column = 0
+        self.message = "ok: no steered fields"
         self._group()
 
     def _group(self):
@@ -111,14 +112,17 @@ class DerivedFields:
                     fx.compile_expression(expr.strip(), self.data, at=at)
                 except fx.ExprError as e:
                     self.error_column = expr_start + e.pos + 1
+                    self.message = f"error in {name} at column {self.error_column} of the text: {e}"
                     print(f"[derived] {name}: {e}", flush=True)
                     return
                 steered[name] = (expr.strip(), at)
         except ValueError as e:
             self.error_column = -1
+            self.message = f"error: {e}"
             print(f"[derived] {e}", flush=True)
             return
         self.steered, self.error_column = steered, 0
+        self.message = f"ok: steered fields {', '.join(steered) or 'none'}"
         self._group()
         print(f"[derived] steered fields: {', '.join(steered) or 'none'}", flush=True)
 

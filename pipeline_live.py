@@ -14,6 +14,7 @@ options.CatalystLiveTrigger.Frequency = 300
 # Registering the channels makes them extractable from a Live client.
 grid = simple.TrivialProducer(registrationName="grid")
 monitors = simple.TrivialProducer(registrationName="monitors")
+derived_status = simple.TrivialProducer(registrationName="derived_status")
 
 # Steerable parameters a Live client can edit; catalyst_results returns them
 # under catalyst/steerable.
@@ -27,5 +28,6 @@ def catalyst_execute(info):
     # extract would otherwise see empty data.
     grid.UpdatePipeline(info.time)
     monitors.UpdatePipeline(info.time)
+    derived_status.UpdatePipeline(info.time)
     if info.cycle % 1000 == 0:
         print(f"[catalyst] cycle {info.cycle} time {info.time:.3f}", flush=True)

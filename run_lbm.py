@@ -89,6 +89,12 @@ class CatalystAdaptor:
         columns = mon["data/values"]
         for name, values in self.history.items():
             columns[name].set(np.asarray(values))
+        if self.derived:
+            # The last steering request's outcome as text: a table of UTF-8 byte values.
+            status = node["catalyst/channels/derived_status"]
+            status["type"] = "table"
+            codes = list(self.derived.message.encode("utf-8")) or [0]
+            status["data/values/message"].set(np.asarray(codes, dtype=np.int32))
         if self.extra_channels:
             self.extra_channels(node["catalyst/channels"])
         catalyst.execute(node)

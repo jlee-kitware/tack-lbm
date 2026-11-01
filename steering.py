@@ -50,13 +50,13 @@ DERIVED_XML = """    <SourceProxy name="LBMDerived" class="vtkSteeringDataGenera
                          use_index="1" clean_command="Clear" initial_string="derived"
                          number_of_elements_per_command="1" repeat_command="1"
                          number_of_elements="1" default_values="0">
-        <Hints><Expression encoding="utf-8" /></Hints>
+        <Hints><Expression encoding="utf-8" status="derived_status" /></Hints>
         <Documentation>Extra fields on the grid channel, computed from VTK calculator expressions over
         velocity, pressure and speed: NAME=EXPRESSION, separated by ';', with @cells after an
         expression that takes derivatives (curl, qcrit, grad, div). Example:
         helicity=dot(velocity, curl(velocity))@cells; cp=2 * pressure / 0.0064.
-        Empty text removes them. The derived_error monitor is 0 when the last text compiled,
-        otherwise the column of the error in the text.</Documentation>
+        Empty text removes them. The derived_status channel holds the outcome of the last text:
+        the fields it added, or the error with its column.</Documentation>
       </IntVectorProperty>
     </SourceProxy>"""
 
