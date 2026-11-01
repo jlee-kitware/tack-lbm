@@ -3,8 +3,9 @@
 Each derived field is a VTK calculator expression (tack-expr) evaluated on the uniform
 grid the grid channel describes. Pointwise expressions are vertex fields; expressions
 with gradients (curl, qcrit, grad, div) are evaluated at cell centers and sent as
-element fields. Fields: velocity (vector), pressure, speed, and temperature when the
-heat model is on.
+element fields. The expressions at each location are compiled into one kernel, so the
+fields they read and the gradients they take are computed once per Catalyst call.
+Fields: velocity (vector), pressure, speed, and temperature when the heat model is on.
 """
 
 import os
@@ -45,8 +46,8 @@ def _pack(ux, uy, uz, out, n):
 
 
 class DerivedFields:
-    """Compiles the expressions once, then evaluates them on each Catalyst call. A Live
-    client can replace the steered ones (steer) while the solver runs."""
+    """Compiles the expressions, one kernel per location, and evaluates them on each
+    Catalyst call. A Live client can replace the steered ones (steer) while the solver runs."""
 
     def __init__(self, solver, specs):
         self.solver = solver
@@ -59,19 +60,29 @@ class DerivedFields:
         for name, key in (("pressure", "p"), ("speed", "vmag"), ("temperature", "temp")):
             if key in solver.output:
                 self.data.fields[name] = td.Field(td.H1(self.data), solver.output[key].tack)
-        self.base = {}
         for name, (expr, at) in specs.items():
             try:
-                self.base[name] = fx.compile_expression(expr, self.data, at=at)
+                fx.compile_expression(expr, self.data, at=at)
             except fx.ExprError as e:
                 raise SystemExit(f"--derive {name}: {e}") from None
+        self.base = dict(specs)
         self.steered = {}
         self.request = ""
         self.error_column = 0
+        self._group()
+
+    def _group(self):
+        """One compiled kernel per output location, for the base and steered fields."""
+        specs = {**self.base, **self.steered}
+        self.groups = {}
+        for at in ("points", "cells"):
+            exprs = {name: expr for name, (expr, where) in specs.items() if where == at}
+            if exprs:
+                self.groups[at] = fx.compile_many(exprs, self.data, at=at)
 
     @property
-    def compiled(self):
-        return {**self.base, **self.steered}
+    def names(self):
+        return [*self.base, *self.steered]
 
     def steer(self, text):
         """Replace the steered fields with text's NAME=EXPRESSION[@cells] entries, separated
@@ -80,7 +91,7 @@ class DerivedFields:
         if text == self.request:
             return
         self.request = text
-        compiled, offset = {}, 0
+        steered, offset = {}, 0
         try:
             for entry in text.split(";"):
                 start = offset + len(entry) - len(entry.lstrip())
@@ -97,29 +108,31 @@ class DerivedFields:
                 expr, at = (body, where.strip()) if at_sign and where.strip() in ("cells", "points") else (rest, "points")
                 expr_start = start + entry.lstrip().index("=") + 1 + (len(expr) - len(expr.lstrip()))
                 try:
-                    compiled[name] = fx.compile_expression(expr.strip(), self.data, at=at)
+                    fx.compile_expression(expr.strip(), self.data, at=at)
                 except fx.ExprError as e:
                     self.error_column = expr_start + e.pos + 1
                     print(f"[derived] {name}: {e}", flush=True)
                     return
+                steered[name] = (expr.strip(), at)
         except ValueError as e:
             self.error_column = -1
             print(f"[derived] {e}", flush=True)
             return
-        self.steered, self.error_column = compiled, 0
-        names = ", ".join(compiled) or "none"
-        print(f"[derived] steered fields: {names}", flush=True)
+        self.steered, self.error_column = steered, 0
+        self._group()
+        print(f"[derived] steered fields: {', '.join(steered) or 'none'}", flush=True)
 
     def evaluate(self):
         """{name: (values, 'vertex' or 'element')} for the current output arrays."""
         results = {}
-        if not self.compiled:
+        if not self.groups:
             return results
         out = self.solver.output
         _pack(out["ux"].tack, out["uy"].tack, out["uz"].tack, self.velocity, self.n)
-        for name, compiled in self.compiled.items():
-            values = compiled(self.data).values.numpy()
-            results[name] = (values, "element" if compiled.mode == "cells" else "vertex")
+        for at, compiled in self.groups.items():
+            association = "element" if at == "cells" else "vertex"
+            for name, field in compiled(self.data).items():
+                results[name] = (field.values.numpy(), association)
         return results
 
     def add_to(self, mesh):

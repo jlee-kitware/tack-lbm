@@ -84,7 +84,7 @@ for _ in range(50):
     solver.step()
 tack.sync()
 t_step = (time.perf_counter() - t0) / 50
-print(f"  INFO  derived fields (4 expressions, to host) {1e3 * t_eval:.2f} ms per Catalyst call; "
+print(f"  INFO  derived fields (4 expressions in 2 kernels, to host) {1e3 * t_eval:.2f} ms per Catalyst call; "
       f"one solver step {1e3 * t_step:.2f} ms")
 print("all checks passed" if not failures else f"{failures} checks failed")
 
