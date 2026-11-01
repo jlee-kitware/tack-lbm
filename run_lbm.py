@@ -23,7 +23,7 @@ from lbm import Solver
 from steering import COLLISION_CODES, COLLISION_NAMES, read_steering, write_proxy_xml
 
 MONITOR_NAMES = ("continuity", "momentum_x", "momentum_y", "momentum_z", "energy", "drag", "lift",
-                 "reynolds", "collision")
+                 "reynolds", "collision", "derived_error")
 
 
 class CatalystAdaptor:
@@ -98,6 +98,9 @@ class CatalystAdaptor:
         results = conduit.Node()
         catalyst.results(results)
         values = read_steering(results)
+        text = values.pop("derived", None)
+        if text is not None and self.derived is not None:
+            self.derived.steer(text)
         s = self.solver
         changed = {k: v for k, v in values.items() if abs(v - self.steered.get(k, v)) > 1e-9}
         if not changed:
@@ -138,11 +141,11 @@ def main():
     nx, ny, nz = args.size
     solver = Solver(nx, ny, nz, collision=args.collision, obstacle=args.obstacle, reynolds=args.re,
                     stride=args.stride)
-    xml = write_proxy_xml(args.steering_xml, args.re, args.collision)
+    xml = write_proxy_xml(args.steering_xml, args.re, args.collision, derived=True)
     from derived import DEFAULTS, DerivedFields, parse
 
     specs = {**({} if args.no_derived else DEFAULTS), **parse(args.derive)}
-    derived = DerivedFields(solver, specs) if specs else None
+    derived = DerivedFields(solver, specs)
     adaptor = CatalystAdaptor(os.path.abspath(args.script), solver, args.catalyst_lib, xml,
                               derived=derived)
     print(f"[tack-lbm] {nx}x{ny}x{nz} D3Q19, {args.collision}, {args.obstacle}, Re={args.re}", flush=True)
@@ -165,6 +168,7 @@ def main():
         monitors = solver.monitors(args.interval)
         monitors["reynolds"] = solver.reynolds
         monitors["collision"] = float(COLLISION_CODES[solver.collision_name])
+        monitors["derived_error"] = float(derived.error_column)
         step = solver.step_count
         adaptor.execute(step, step * solver.u0 / solver.diameter, monitors)
         adaptor.steer()

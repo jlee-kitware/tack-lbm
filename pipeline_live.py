@@ -18,6 +18,8 @@ monitors = simple.TrivialProducer(registrationName="monitors")
 # Steerable parameters a Live client can edit; catalyst_results returns them
 # under catalyst/steerable.
 steering = CreateSteerableParameters("LBMSteering")
+# The derived-field expressions, as text, come back under catalyst/derived.
+derived = CreateSteerableParameters("LBMDerived", "DerivedParameters", "derived")
 
 
 def catalyst_execute(info):
