@@ -3,7 +3,9 @@
     python run_lbm.py --script pipeline_live.py [--collision les] [--obstacle cylinder]
 
 Channels:
-    grid      uniform grid with velocity, pressure, speed (zero-copy managed memory)
+    grid      uniform grid with velocity, pressure, speed (zero-copy managed memory), and
+              derived fields from field expressions: vorticity and q_criterion by default,
+              more with --derive NAME=EXPRESSION[@cells]
     monitors  residual and force history as a points mesh, the layout trame-cfd-mcp reads
 """
 
@@ -26,7 +28,7 @@ MONITOR_NAMES = ("continuity", "momentum_x", "momentum_y", "momentum_z", "energy
 
 class CatalystAdaptor:
     def __init__(self, script, solver, paraview_lib, proxy_xml, monitor_names=MONITOR_NAMES,
-                 extra_channels=None):
+                 extra_channels=None, derived=None):
         node = conduit.Node()
         node["catalyst/scripts/script/filename"] = script
         node["catalyst/proxies/steering"] = proxy_xml
@@ -36,6 +38,7 @@ class CatalystAdaptor:
         self.solver = solver
         self.monitor_names = monitor_names
         self.extra_channels = extra_channels
+        self.derived = derived
         self.history = {name: [] for name in ("iteration", *monitor_names)}
         self.steered = {"reynolds": solver.reynolds, "collision": float(COLLISION_CODES[solver.collision_name])}
 
@@ -78,6 +81,8 @@ class CatalystAdaptor:
             fld["association"] = "vertex"
             fld["topology"] = "mesh"
             fld["values"].set_external(f[key].numpy)
+        if self.derived:
+            self.derived.add_to(mesh)
 
         mon = node["catalyst/channels/monitors"]
         mon["type"] = "table"
@@ -121,6 +126,11 @@ def main():
     parser.add_argument("--stride", type=int, default=2, help="grid channel subsampling (1 = full resolution)")
     parser.add_argument("--max-sps", type=float, default=0, help="throttle steps per second (0 = full speed)")
     parser.add_argument("--catalyst-lib", default=os.path.join(pv_build, "lib", "catalyst"))
+    parser.add_argument("--derive", action="append", default=[], metavar="NAME=EXPRESSION[@cells]",
+                        help="a derived grid field from a VTK calculator expression over velocity, "
+                             "pressure and speed; gradients (curl, qcrit, grad, div) need @cells")
+    parser.add_argument("--no-derived", action="store_true",
+                        help="leave out the default derived fields (vorticity, q_criterion)")
     parser.add_argument("--steering-xml", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "steering.xml"),
                         help="where to write the steering proxy definition the Live client also loads")
     args = parser.parse_args()
@@ -129,7 +139,12 @@ def main():
     solver = Solver(nx, ny, nz, collision=args.collision, obstacle=args.obstacle, reynolds=args.re,
                     stride=args.stride)
     xml = write_proxy_xml(args.steering_xml, args.re, args.collision)
-    adaptor = CatalystAdaptor(os.path.abspath(args.script), solver, args.catalyst_lib, xml)
+    from derived import DEFAULTS, DerivedFields, parse
+
+    specs = {**({} if args.no_derived else DEFAULTS), **parse(args.derive)}
+    derived = DerivedFields(solver, specs) if specs else None
+    adaptor = CatalystAdaptor(os.path.abspath(args.script), solver, args.catalyst_lib, xml,
+                              derived=derived)
     print(f"[tack-lbm] {nx}x{ny}x{nz} D3Q19, {args.collision}, {args.obstacle}, Re={args.re}", flush=True)
 
     running = True

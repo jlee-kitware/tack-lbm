@@ -32,6 +32,21 @@ Click Connect, then ask the assistant for the flow field or the residuals.
 
 Catalyst Live sends extracts every 300 steps (`pipeline_live.py`).
 
+## Derived fields
+
+The grid channel also carries fields computed from VTK calculator expressions with
+[tack-expr](../tack-expr), each compiled to one Tack kernel: `vorticity` (`mag(curl(velocity))`)
+and `q_criterion` (`qcrit(velocity)`) by default, at cell centers. Add more with `--derive`:
+
+```bash
+python run_lbm.py --derive "cp=2 * pressure / (0.08 * 0.08)" --derive "omega_z=curl(velocity)[2]@cells"
+```
+
+A pointwise expression is a vertex field; one with gradients needs `@cells` and is an element
+field. `--no-derived` leaves out the defaults. `derived_check.py` compares the derived fields with
+`tack.dataset`'s gradient filters and a NumPy reference, and `pipeline_check.py` prints what the
+grid channel carries, without a Live client.
+
 ## Steering
 
 `steering.py` defines a Catalyst steering proxy (`LBMSteering`) with the Reynolds number and the
