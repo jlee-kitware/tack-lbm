@@ -15,8 +15,8 @@ import numpy as np
 import tack
 import tack.dataset as td
 
-# tack-expr lives in Tack's tree, packages/tack-expr; TACK_EXPR points elsewhere.
-sys.path.insert(0, os.environ.get("TACK_EXPR", os.path.expanduser("~/gitsync/tack/packages/tack-expr")))
+# tack-expr lives in Tack's tree, packages/tack-expr/src; TACK_EXPR points elsewhere.
+sys.path.insert(0, os.environ.get("TACK_EXPR", os.path.expanduser("~/gitsync/tack/packages/tack-expr/src")))
 import tack_expr as fx  # noqa: E402
 
 DEFAULTS = {
