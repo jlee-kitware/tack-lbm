@@ -23,7 +23,7 @@ from lbm import Solver
 from steering import COLLISION_CODES, COLLISION_NAMES, read_steering, write_proxy_xml
 
 MONITOR_NAMES = ("continuity", "momentum_x", "momentum_y", "momentum_z", "energy", "drag", "lift",
-                 "reynolds", "collision", "derived_error")
+                 "reynolds", "collision", "derived_error", "time")
 
 
 class CatalystAdaptor:
@@ -176,7 +176,8 @@ def main():
         monitors["collision"] = float(COLLISION_CODES[solver.collision_name])
         monitors["derived_error"] = float(derived.error_column)
         step = solver.step_count
-        adaptor.execute(step, step * solver.u0 / solver.diameter, monitors)
+        monitors["time"] = step * solver.u0 / solver.diameter
+        adaptor.execute(step, monitors["time"], monitors)
         adaptor.steer()
         now = time.perf_counter()
         if args.max_sps > 0:
