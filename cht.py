@@ -50,17 +50,22 @@ class ConjugateHeat:
         self.solid = HeatSinkSolid(spec_of(self.fluid), order=order)
         self.W = self.solid.voxel_map(np.stack([x, y, z], axis=1).astype(float))
         self.Ws = self.W[self.surface]
-        self.h = 2.0 * self.fluid.nu / self.fluid.prandtl
         g = self.fluid.geo
         cx, cz = 0.5 * (g.x0 + g.x1), 0.5 * (g.z0 + g.z1)
         half = 0.15 * (g.x1 - g.x0)
         chip = (cx - half, cx + half, cz - half, cz + half, g.y_base - 0.5)
-        self.solid.setup(kappa=kappa, alpha=self.fluid.nu / self.fluid.prandtl, capacity=capacity,
-                         dt=float(interval), power=power, chip=chip,
-                         robin=(self.Ws, self.h * self.wet_faces[self.surface]))
+        self.kappa, self.capacity, self.chip, self.power = kappa, capacity, chip, power
+        self.recouple()
         self.setup_seconds = time.perf_counter() - t0
-        self.power = power
         self.push_temperature()
+
+    def recouple(self):
+        """Set up the solid for the fluid's current viscosity (again after a Reynolds number change)."""
+        f = self.fluid
+        self.h = 2.0 * f.nu / f.prandtl
+        self.solid.setup(kappa=self.kappa, alpha=f.nu / f.prandtl, capacity=self.capacity,
+                         dt=float(self.interval), power=self.power, chip=self.chip,
+                         robin=(self.Ws, self.h * self.wet_faces[self.surface]))
 
     def push_temperature(self):
         self.fluid.heat_fields["t_solid"].numpy[self.voxels] = self.W @ self.solid.dofs()

@@ -2,7 +2,7 @@
 # Start the Tack LBM solver (Catalyst Live on :22222) and the CFD assistant
 # (trame on :8080) as user services. Extra arguments go to run_lbm.py.
 #   ./run_live.sh --collision les --obstacle cylinder --re 300
-#   CASE=cht ./run_live.sh --power 50       (heat sink, conjugate heat transfer with PyMFEM)
+#   CASE=cht ./run_live.sh --power 15       (heat sink in SI units, 15 W, conjugate heat transfer with PyMFEM)
 # Both services stop after RUN_LIMIT (default 2h); RUN_LIMIT=infinity disables it.
 set -e
 RUN_LIMIT=${RUN_LIMIT:-2h}

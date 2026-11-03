@@ -19,7 +19,7 @@ PROXY_XML = """<ServerManagerConfiguration>
                             number_of_elements_per_command="1" repeat_command="1"
                             number_of_elements="1" default_values="{reynolds}">
         <DoubleRangeDomain name="range" min="20" max="3000" />
-        <Documentation>Reynolds number based on cylinder diameter and inflow speed.</Documentation>
+        <Documentation>{reynolds_doc}</Documentation>
       </DoubleVectorProperty>
       <IntVectorProperty name="Collision" label="Collision model" command="SetTuple1Int"
                          use_index="1" clean_command="Clear" initial_string="collision"
@@ -64,17 +64,19 @@ POWER_XML = """      <DoubleVectorProperty name="Power" label="Heater power" com
                             use_index="1" clean_command="Clear" initial_string="power"
                             number_of_elements_per_command="1" repeat_command="1"
                             number_of_elements="1" default_values="{power}">
-        <DoubleRangeDomain name="range" min="0" max="500" />
-        <Documentation>Heat released by the chip under the heat sink's base, in lattice units.</Documentation>
+        <DoubleRangeDomain name="range" min="0" max="{power_max}" />
+        <Documentation>{power_doc}</Documentation>
       </DoubleVectorProperty>"""
 
 
-def write_proxy_xml(path, reynolds, collision, power=None, derived=False):
-    extra = POWER_XML.format(power=power) if power is not None else ""
+def write_proxy_xml(path, reynolds, collision, power=None, derived=False, power_max=500.0,
+                    power_doc="Heat released by the chip under the heat sink's base, in lattice units.",
+                    reynolds_doc="Reynolds number based on cylinder diameter and inflow speed."):
+    extra = POWER_XML.format(power=power, power_max=power_max, power_doc=power_doc) if power is not None else ""
     proxies = DERIVED_XML if derived else ""
     with open(path, "w") as f:
         f.write(PROXY_XML.format(reynolds=reynolds, collision=COLLISION_CODES[collision], extra=extra,
-                                 proxies=proxies))
+                                 proxies=proxies, reynolds_doc=reynolds_doc))
     return path
 
 

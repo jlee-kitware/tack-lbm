@@ -28,7 +28,7 @@ MONITOR_NAMES = ("continuity", "momentum_x", "momentum_y", "momentum_z", "energy
 
 class CatalystAdaptor:
     def __init__(self, script, solver, paraview_lib, proxy_xml, monitor_names=MONITOR_NAMES,
-                 extra_channels=None, derived=None):
+                 extra_channels=None, derived=None, scales=None):
         node = conduit.Node()
         node["catalyst/scripts/script/filename"] = script
         node["catalyst/proxies/steering"] = proxy_xml
@@ -39,6 +39,8 @@ class CatalystAdaptor:
         self.monitor_names = monitor_names
         self.extra_channels = extra_channels
         self.derived = derived
+        # Optional SI output: {"length": metres per cell, quantity: (factor, offset)}.
+        self.scales = scales
         self.history = {name: [] for name in ("iteration", *monitor_names)}
         self.steered = {"reynolds": solver.reynolds, "collision": float(COLLISION_CODES[solver.collision_name])}
 
@@ -61,7 +63,7 @@ class CatalystAdaptor:
         mesh["coordsets/coords/dims/i"] = mx
         mesh["coordsets/coords/dims/j"] = my
         mesh["coordsets/coords/dims/k"] = mz
-        spacing = s.stride / s.diameter
+        spacing = s.stride * self.scales["length"] if self.scales else s.stride / s.diameter
         for axis in "xyz":
             mesh[f"coordsets/coords/origin/{axis}"] = 0.0
             mesh[f"coordsets/coords/spacing/d{axis}"] = spacing
@@ -71,16 +73,23 @@ class CatalystAdaptor:
         velocity = mesh["fields/velocity"]
         velocity["association"] = "vertex"
         velocity["topology"] = "mesh"
-        velocity["values/x"].set_external(f["ux"].numpy)
-        velocity["values/y"].set_external(f["uy"].numpy)
-        velocity["values/z"].set_external(f["uz"].numpy)
-        for name, key in (("pressure", "p"), ("speed", "vmag"), ("temperature", "temp")):
+        def put(target, key, quantity):
+            if self.scales and quantity in self.scales:
+                factor, offset = self.scales[quantity]
+                target.set(f[key].numpy * factor + offset)
+            else:
+                target.set_external(f[key].numpy)
+
+        for axis in "xyz":
+            put(velocity[f"values/{axis}"], f"u{axis}", "velocity")
+        for name, key, quantity in (("pressure", "p", "pressure"), ("speed", "vmag", "velocity"),
+                                    ("temperature", "temp", "temperature")):
             if key not in f:
                 continue
             fld = mesh[f"fields/{name}"]
             fld["association"] = "vertex"
             fld["topology"] = "mesh"
-            fld["values"].set_external(f[key].numpy)
+            put(fld["values"], key, quantity)
         if self.derived:
             self.derived.add_to(mesh)
 
