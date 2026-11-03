@@ -9,6 +9,7 @@ Fields: velocity (vector), pressure, speed, and temperature when the heat model 
 """
 
 import os
+import re
 import sys
 
 import numpy as np
@@ -108,6 +109,9 @@ class DerivedFields:
                     raise ValueError(f"'{name}' is already a grid field")
                 body, at_sign, where = rest.rpartition("@")
                 expr, at = (body, where.strip()) if at_sign and where.strip() in ("cells", "points") else (rest, "points")
+                # Field names in any case ("Velocity" reads velocity); same length, so columns hold.
+                for field in self.data.fields:
+                    expr = re.sub(rf"\b{field}\b", field, expr, flags=re.IGNORECASE)
                 expr_start = start + entry.lstrip().index("=") + 1 + (len(expr) - len(expr.lstrip()))
                 try:
                     fx.compile_expression(expr.strip(), self.data, at=at)
