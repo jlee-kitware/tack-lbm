@@ -1,3 +1,5 @@
+import os
+
 from paraview import simple
 from paraview.catalyst import Options
 from paraview.simple import CreateSteerableParameters
@@ -22,15 +24,24 @@ steering = CreateSteerableParameters("LBMSteering")
 # The derived-field expressions, as text, come back under catalyst/derived.
 derived = CreateSteerableParameters("LBMDerived", "DerivedParameters", "derived")
 
-# A solver-side extract: the Q-criterion isosurface computed in situ from the solver's
-# q_criterion field, so a Live client receives the surface instead of the whole grid.
-_q_points = simple.CellDatatoPointData(registrationName="_q_points", Input=grid)
-_q_points.PassCellData = 0
-vortices = simple.Contour(registrationName="vortices", Input=_q_points)
-vortices.ContourBy = ["POINTS", "q_criterion"]
-vortices.Isosurfaces = [0.005]
-vortices.ComputeScalars = 1
+# The lean channel: the grid with only speed and the solver-computed cell fields (q_criterion
+# and the steered derived fields), so a Live client can contour vortices without the whole grid.
+lean = simple.PassArrays(registrationName="lean", Input=grid)
+lean.PointDataArrays = ["speed"]
+lean.CellDataArrays = ["q_criterion"]
+LEAN_SKIP = {"vorticity"}
+
+# A solver-side isosurface of q_criterion, on request (TACK_LBM_VORTICES=1): the smallest
+# transfer, but the contour runs on the CPU in the solver loop, so it refreshes less often.
+vortices = None
 VORTEX_EVERY = 5
+if os.environ.get("TACK_LBM_VORTICES") == "1":
+    _q_points = simple.CellDatatoPointData(registrationName="_q_points", Input=grid)
+    _q_points.PassCellData = 0
+    vortices = simple.Contour(registrationName="vortices", Input=_q_points)
+    vortices.ContourBy = ["POINTS", "q_criterion"]
+    vortices.Isosurfaces = [0.005]
+    vortices.ComputeScalars = 1
 
 
 def catalyst_execute(info):
@@ -39,7 +50,11 @@ def catalyst_execute(info):
     grid.UpdatePipeline(info.time)
     monitors.UpdatePipeline(info.time)
     derived_status.UpdatePipeline(info.time)
-    if info.cycle // 100 % VORTEX_EVERY == 0:
+    cells = [name for name in grid.CellData.keys() if name not in LEAN_SKIP]
+    if cells != list(lean.CellDataArrays):
+        lean.CellDataArrays = cells
+    lean.UpdatePipeline(info.time)
+    if vortices is not None and info.cycle // 100 % VORTEX_EVERY == 0:
         _q_points.UpdatePipeline(info.time)
         q_max = _q_points.PointData["q_criterion"].GetRange()[1]
         if q_max > 0:
