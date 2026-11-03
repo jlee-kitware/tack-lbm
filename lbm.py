@@ -525,7 +525,8 @@ class Solver:
                     "sphere": lambda: Sphere(x0, y0, 0.5 * nz, r),
                     "box": lambda: Box(x0, y0, 0.5 * nz, r, r, 0.3 * nz),
                     "heatsink": lambda: HeatSink(ny, int(0.2 * nx), int(0.3 * nx), int(0.125 * nz),
-                                                 int(0.75 * nz), 6, int(0.45 * ny), 4, 12)}[kind]()
+                                                 int(0.75 * nz), round(self.diameter / 2), int(0.45 * ny),
+                                                 round(self.diameter / 3), round(self.diameter))}[kind]()
 
     def step(self, report=False):
         diag = self.report if report else self.quiet

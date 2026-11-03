@@ -30,10 +30,10 @@ def sink_mask(lat, geo, sink, solid):
 
 class ConjugateHeat:
     def __init__(self, size=(320, 96, 128), reynolds=300.0, collision="les", power=50.0,
-                 kappa=200.0, capacity=0.05, order=2, interval=100, stride=2, device="cuda"):
+                 kappa=200.0, capacity=0.05, order=2, interval=100, stride=2, device="cuda", diameter=12.0):
         nx, ny, nz = size
         self.fluid = Solver(nx, ny, nz, collision=collision, obstacle="heatsink", reynolds=reynolds,
-                            heat=True, diameter=12.0, stride=stride, device=device)
+                            heat=True, diameter=diameter, stride=stride, device=device)
         self.interval = interval
         lat = self.fluid.lat
         sink, solid = tack.zeros((lat.n,)), tack.zeros((lat.n,))
@@ -47,7 +47,8 @@ class ConjugateHeat:
         y = (self.voxels // nx) % ny
         z = self.voxels // (nx * ny)
         t0 = time.perf_counter()
-        self.solid = HeatSinkSolid(spec_of(self.fluid), order=order)
+        # The solid's mesh is the same for any lattice resolution: elements a third of the fin pitch.
+        self.solid = HeatSinkSolid(spec_of(self.fluid), order=order, element_size=diameter / 3)
         self.W = self.solid.voxel_map(np.stack([x, y, z], axis=1).astype(float))
         self.Ws = self.W[self.surface]
         g = self.fluid.geo
