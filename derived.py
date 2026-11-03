@@ -6,6 +6,10 @@ with gradients (curl, qcrit, grad, div) are evaluated at cell centers and sent a
 element fields. The expressions at each location are compiled into one kernel, so the
 fields they read and the gradients they take are computed once per Catalyst call.
 Fields: velocity (vector), pressure, speed, and temperature when the heat model is on.
+
+The solver gives velocity its gradient: central differences on the output grid, one-sided
+at its walls (gradient="lattice", the default). curl, div, qcrit and grad read it; the
+expressions don't change. gradient="basis" differentiates the grid's trilinear basis instead.
 """
 
 import os
@@ -47,18 +51,68 @@ def _pack(ux, uy, uz, out, n):
         out[i] = tack.vec3(ux[i], uy[i], uz[i])
 
 
+@tack.kernel
+def _jacobian(ux, uy, uz, out, mx, my, mz, inv_h):
+    # Row i of out[p] is the gradient of velocity component i at point p.
+    for p in range(out.shape[0]):
+        i = p % mx
+        j = (p // mx) % my
+        k = p // (mx * my)
+        xl, xh, yl, yh, zl, zh = i, i, j, j, k, k
+        if i > 0:
+            xl = i - 1
+        if i < mx - 1:
+            xh = i + 1
+        if j > 0:
+            yl = j - 1
+        if j < my - 1:
+            yh = j + 1
+        if k > 0:
+            zl = k - 1
+        if k < mz - 1:
+            zh = k + 1
+        sx, sy, sz = 0.0, 0.0, 0.0
+        if xh > xl:
+            sx = inv_h / (xh - xl)
+        if yh > yl:
+            sy = inv_h / (yh - yl)
+        if zh > zl:
+            sz = inv_h / (zh - zl)
+        base = mx * (j + my * k)
+        x0, x1 = xl + base, xh + base
+        y0, y1 = i + mx * (yl + my * k), i + mx * (yh + my * k)
+        z0, z1 = i + mx * (j + my * zl), i + mx * (j + my * zh)
+        out[p][0] = (ux[x1] - ux[x0]) * sx
+        out[p][1] = (ux[y1] - ux[y0]) * sy
+        out[p][2] = (ux[z1] - ux[z0]) * sz
+        out[p][3] = (uy[x1] - uy[x0]) * sx
+        out[p][4] = (uy[y1] - uy[y0]) * sy
+        out[p][5] = (uy[z1] - uy[z0]) * sz
+        out[p][6] = (uz[x1] - uz[x0]) * sx
+        out[p][7] = (uz[y1] - uz[y0]) * sy
+        out[p][8] = (uz[z1] - uz[z0]) * sz
+
+
 class DerivedFields:
     """Compiles the expressions, one kernel per location, and evaluates them on each
     Catalyst call. A Live client can replace the steered ones (steer) while the solver runs."""
 
-    def __init__(self, solver, specs):
+    def __init__(self, solver, specs, gradient="lattice"):
+        if gradient not in ("lattice", "basis"):
+            raise ValueError(f"gradient is 'lattice' or 'basis', not {gradient!r}")
         self.solver = solver
         mx, my, mz = solver.out_dims
         h = solver.stride / solver.diameter
+        self.inv_h = 1.0 / h
         self.data = td.uniform_grid((mx, my, mz), spacing=(h, h, h))
         self.n = mx * my * mz
         self.velocity = tack.empty((self.n,), tack.vec3())
-        self.data.fields["velocity"] = td.Field(td.H1(self.data), self.velocity)
+        self.jacobian = None
+        given = None
+        if gradient == "lattice":
+            self.jacobian = tack.empty((self.n,), tack.vec(9, tack.f32))
+            given = td.Field(td.H1(self.data), self.jacobian)
+        self.data.fields["velocity"] = td.Field(td.H1(self.data), self.velocity, gradient=given)
         for name, key in (("pressure", "p"), ("speed", "vmag"), ("temperature", "temp")):
             if key in solver.output:
                 self.data.fields[name] = td.Field(td.H1(self.data), solver.output[key].tack)
@@ -138,6 +192,9 @@ class DerivedFields:
             return results
         out = self.solver.output
         _pack(out["ux"].tack, out["uy"].tack, out["uz"].tack, self.velocity, self.n)
+        if self.jacobian is not None:
+            mx, my, mz = self.solver.out_dims
+            _jacobian(out["ux"].tack, out["uy"].tack, out["uz"].tack, self.jacobian, mx, my, mz, self.inv_h)
         for at, compiled in self.groups.items():
             association = "element" if at == "cells" else "vertex"
             for name, field in compiled(self.data).items():

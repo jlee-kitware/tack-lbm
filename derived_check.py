@@ -1,4 +1,5 @@
-"""Check the derived fields against tack.dataset's gradient filters and a NumPy reference.
+"""Check the derived fields against tack.dataset's gradient filters and a NumPy reference,
+with the trilinear basis's gradient and with the solver's (central differences).
 
     python derived_check.py [--steps 400] [--size 128 64 32] [--stride 1]
 """
@@ -27,9 +28,6 @@ tack.sync()
 specs = dict(DEFAULTS)
 specs["speed_check"] = ("mag(velocity) - speed", "points")
 specs["pressure_coefficient"] = ("2 * pressure / (0.08 * 0.08)", "points")
-derived = DerivedFields(solver, specs)
-results = derived.evaluate()
-data = derived.data
 failures = 0
 
 
@@ -42,6 +40,10 @@ def report(label, got, ref, tol):
 
 
 print(f"{args.size} grid, stride {args.stride}, {args.steps} steps: output grid {solver.out_dims}")
+print("basis gradient")
+derived = DerivedFields(solver, specs, gradient="basis")
+results = derived.evaluate()
+data = derived.data
 fq = td.flow_quantities(data, td.gradients(data, "velocity", at="cells"))
 report("vorticity vs td.gradients + flow_quantities", results["vorticity"][0],
        np.linalg.norm(fq.vorticity.values.numpy(), axis=1), 1e-5)
@@ -72,6 +74,35 @@ report("vorticity vs NumPy cell-center differences", results["vorticity"][0],
        np.sqrt((w ** 2).sum(axis=0)).ravel(), 1e-4)
 q = -0.5 * (dx[0] ** 2 + dy[1] ** 2 + dz[2] ** 2) - (dy[0] * dx[1] + dz[0] * dx[2] + dz[1] * dy[2])
 report("q_criterion vs NumPy cell-center differences", results["q_criterion"][0], q.ravel(), 1e-4)
+basis_vorticity = results["vorticity"][0]
+
+print("solver gradient (central differences)")
+derived = DerivedFields(solver, specs)
+results = derived.evaluate()
+data = derived.data
+fq = td.flow_quantities(data, td.gradients(data, "velocity", at="cells"))
+report("vorticity vs td.gradients + flow_quantities", results["vorticity"][0],
+       np.linalg.norm(fq.vorticity.values.numpy(), axis=1), 1e-5)
+report("q_criterion vs td.gradients + flow_quantities", results["q_criterion"][0],
+       fq.q_criterion.values.numpy(), 1e-5)
+# NumPy: central differences at points; a cell's value is the mean of its eight corners'.
+J = np.stack([np.stack(np.gradient(u[i].astype(np.float64), h, axis=(2, 1, 0))) for i in range(3)])
+
+
+def corners(a):
+    return 0.125 * sum(a[..., dk:a.shape[-3] - 1 + dk, dj:a.shape[-2] - 1 + dj, di:a.shape[-1] - 1 + di]
+                       for dk in (0, 1) for dj in (0, 1) for di in (0, 1))
+
+
+G = corners(J)                     # G[i, j]: d u_i / d x_j at cell centers
+w = np.stack([G[2, 1] - G[1, 2], G[0, 2] - G[2, 0], G[1, 0] - G[0, 1]])
+report("vorticity vs NumPy central differences", results["vorticity"][0],
+       np.sqrt((w ** 2).sum(axis=0)).ravel(), 1e-4)
+q = -0.5 * (G[0, 0] ** 2 + G[1, 1] ** 2 + G[2, 2] ** 2) - (G[0, 1] * G[1, 0] + G[0, 2] * G[2, 0] + G[1, 2] * G[2, 1])
+report("q_criterion vs NumPy central differences", results["q_criterion"][0], q.ravel(), 1e-4)
+gap = np.abs(results["vorticity"][0] - basis_vorticity)
+print(f"  INFO  vorticity, solver vs basis gradient: median |difference| {float(np.median(gap)):.1e}, "
+      f"max {float(np.max(gap)):.1e}, of a largest value {float(np.max(basis_vorticity)):.1e}")
 speed = results["speed_check"][0]
 print(f"  INFO  mag(velocity) - speed: max |difference| {float(np.max(np.abs(speed))):.1e}")
 
@@ -84,7 +115,7 @@ for _ in range(50):
     solver.step()
 tack.sync()
 t_step = (time.perf_counter() - t0) / 50
-print(f"  INFO  derived fields (4 expressions in 2 kernels, to host) {1e3 * t_eval:.2f} ms per Catalyst call; "
+print(f"  INFO  derived fields (velocity's gradient, 4 expressions in 2 kernels, to host) {1e3 * t_eval:.2f} ms per Catalyst call; "
       f"one solver step {1e3 * t_step:.2f} ms")
 print("all checks passed" if not failures else f"{failures} checks failed")
 
