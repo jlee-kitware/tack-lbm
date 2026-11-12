@@ -32,11 +32,13 @@ class WingFEM:
     base material E0, rho0; the default is a spar near the quarter chord and trailing-edge ballast."""
 
     def __init__(self, chord=32.0, span=96.0, ea=0.4, order=2, n_chord=24, n_thick=2, n_span=24,
-                 rho0=190.0, E0=1.0e3, poisson=0.3, regions=None, edge=0.01, modes=6):
+                 rho0=190.0, E0=1.0e3, poisson=0.3, regions=None, caps=None, edge=0.01, modes=6):
+        """``caps`` (chord_from, chord_to, stiffness factor) makes the outer half of the thickness in that
+        chord band a spar's caps: stiff in bending, adding little torsional stiffness."""
         self.chord, self.span, self.ea = chord, span, ea
         if regions is None:
-            regions = {(0.0, 0.15): (1.0, 1.0), (0.15, 0.4): (12.0, 1.0),
-                       (0.4, 0.7): (1.0, 1.0), (0.7, 1.0): (1.0, 3.0)}
+            regions = {(0.0, 0.05): (1.0, 1.0), (0.05, 0.3): (12.0, 1.0),
+                       (0.3, 0.7): (1.0, 1.0), (0.7, 1.0): (1.0, 3.0)}
         self.regions = regions
         mesh = mfem.Mesh.MakeCartesian3D(n_chord, n_thick, n_span, mfem.Element.HEXAHEDRON, 1.0, 2.0, span)
         v = np.array(mesh.GetVertexArray(), float)
@@ -44,8 +46,12 @@ class WingFEM:
         t = v[:, 1] - 1.0
         names = list(regions)
         for i in range(mesh.GetNE()):
-            uc = u[mesh.GetElementVertices(i)].mean()
-            mesh.SetAttribute(i, 1 + next(k for k, (a, b) in enumerate(names) if a <= uc <= b))
+            ids = mesh.GetElementVertices(i)
+            uc, tc = u[ids].mean(), t[ids].mean()
+            attr = 1 + next(k for k, (a, b) in enumerate(names) if a <= uc <= b)
+            if caps and caps[0] <= uc <= caps[1] and abs(tc) > 0.5:
+                attr = len(names) + 1
+            mesh.SetAttribute(i, attr)
         mesh.SetAttributes()
         mesh.SetCurvature(order, False, 3, mfem.Ordering.byVDIM)
         nodes = mesh.GetNodes()
@@ -59,8 +65,8 @@ class WingFEM:
         self.coords = x.copy()
         self.rest = x[: self.nv].copy()
         self.fes = fes = nodes.FESpace()
-        stiff = np.array([regions[k][0] for k in names]) * E0
-        dens = np.array([regions[k][1] for k in names]) * rho0
+        stiff = np.array([regions[k][0] for k in names] + ([caps[2]] if caps else [])) * E0
+        dens = np.array([regions[k][1] for k in names] + ([1.0] if caps else [])) * rho0
         lam = mfem.PWConstCoefficient(mfem.Vector(stiff * poisson / ((1 + poisson) * (1 - 2 * poisson))))
         mu = mfem.PWConstCoefficient(mfem.Vector(stiff / (2 * (1 + poisson))))
         rho = mfem.PWConstCoefficient(mfem.Vector(dens))
@@ -88,6 +94,7 @@ class WingFEM:
         self.shapes = np.zeros((modes, K.shape[0]))
         self.shapes[:, free] = phi[:, order_].T
         self._M = M
+        self._Kf, self._free = Kf, free
         self._fit_sections()
         self._surface()
 
@@ -135,6 +142,28 @@ class WingFEM:
     def deformed(self, q):
         return self.rest + np.tensordot(q, self.shapes[:, : 3 * self.nv].reshape(-1, self.nv, 3), 1)
 
+    def elastic_axis(self):
+        """Chord fraction where a vertical tip load bends the wing without twisting its tip."""
+        tip = sel = np.abs(self.coords[:, 2] - self.span) < 1e-5
+        s_tip, t_tip = self.coords[sel, 0], self.coords[sel, 1]
+        solve = sla.splu(self._Kf)
+        twists = []
+        stations = (-0.2 * self.chord, 0.3 * self.chord)
+        for s0 in stations:
+            band = tip & (np.abs(self.coords[:, 0] - s0) <= np.sort(np.abs(self.coords[tip, 0] - s0))[3])
+            f = np.zeros(3 * len(self.coords))
+            f[3 * np.flatnonzero(band) + 1] = 1.0 / band.sum()
+            u = np.zeros_like(f)
+            u[self._free] = solve.solve(f[self._free])
+            d = u.reshape(-1, 3)[sel]
+            n = sel.sum()
+            A = np.zeros((2 * n, 3))
+            A[:n, 0], A[:n, 1], A[n:, 1], A[n:, 2] = 1.0, -s_tip, t_tip, 1.0
+            (_, alpha, _), *_ = np.linalg.lstsq(A, np.concatenate([d[:, 1], d[:, 0]]), rcond=None)
+            twists.append(alpha)
+        s_zero = stations[0] - twists[0] * (stations[1] - stations[0]) / (twists[1] - twists[0])
+        return self.ea + s_zero / self.chord
+
     def section_properties(self):
         """Mass per span, CG and gyration about the reference axis, from the mass matrix by layer."""
         lumped = np.asarray(self._M.sum(axis=1)).ravel()[0::3]
@@ -145,20 +174,19 @@ class WingFEM:
 
 
 class Modal:
-    """Modal dynamics q'' + 2 zeta w q' + w^2 q (1 + H a(q)^2) = Q, mass normalized modes.
-    ``a`` is the mode's normalized tip amplitude, max(|h_tip| / b, |alpha_tip|)."""
+    """Modal dynamics q'' + 2 zeta w q' + w^2 q (1 + H a^2) = Q, mass normalized modes. The wing
+    stiffens in torsion: ``a`` is the tip twist of the whole motion, in radians."""
 
     def __init__(self, fem, omega, damping=0.0, hardening=40.0):
         self.fem = fem
         self.omega = np.array(omega, float)
         self.damping, self.hardening = damping, hardening
-        b = 0.5 * fem.chord
-        self.tip_scale = np.maximum(np.abs(fem.h[:, -1]) / b, np.abs(fem.alpha[:, -1]))
+        self.tip_twist = np.asarray(fem.alpha[:, -1], float)
         self.q = np.zeros(len(omega))
         self.v = np.zeros(len(omega))
 
     def step(self, force, dt=1.0):
-        a = self.tip_scale * self.q
+        a = float(self.tip_twist @ self.q)
         spring = self.omega ** 2 * self.q * (1.0 + self.hardening * a * a)
         self.v += dt * (force - spring - 2.0 * self.damping * self.omega * self.v)
         self.q += dt * self.v

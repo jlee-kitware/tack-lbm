@@ -35,7 +35,7 @@ options.CatalystLiveTrigger.Frequency = 1
 
 # Core surfaces at a Liutex magnitude of CORE_LEVEL inflow speeds per chord, trimmed WALL_BAND
 # chords from the wing, where the boundary layer's shear reads as rotation on this grid.
-CORE_LEVEL = 0.35
+CORE_LEVEL = 0.2
 WALL_BAND = 0.15
 MIRROR = True
 

@@ -13,7 +13,8 @@ lattice holds one half of a wing clamped at its centre. Every step:
 import numpy as np
 
 import tack
-from fsi_struct import Modal, WingFEM
+from fsi_beam import WingBeam
+from fsi_struct import Modal
 from lbm import COLLISIONS, CX, CY, CZ, D3Q19, FIELDS, Flow, ManagedArray, Quiet, Report, coarsen
 
 
@@ -44,6 +45,20 @@ class FlexWing:
                                    - 0.1036 * c * c * c * c)
         inside = (1.0 if xc >= 0.0 else 0.0) * (1.0 if xc <= 1.0 else 0.0) * (1.0 if abs(t) < half else 0.0)
         return inside * (1.0 if float(z) + 0.5 < self.span else 0.0)
+
+    @tack.func
+    def wall_fraction(self, x, y, z, cx, cy, zs):
+        """Where the wall cuts the link from fluid node (x, y, z) toward (x - cx, y - cy, zs), as a
+        fraction of the link: bisection on the section's shape."""
+        lo = 0.0
+        hi = 1.0
+        for it in range(6):
+            mid = 0.5 * (lo + hi)
+            zl = z + (zs - z) * (1 if mid >= 0.5 else 0)
+            inside = self.solid(float(x) - mid * float(cx), float(y) - mid * float(cy), zl)
+            hi = hi + inside * (mid - hi)
+            lo = lo + (1.0 - inside) * (mid - lo)
+        return 0.5 * (lo + hi)
 
     @tack.func
     def wall_ux(self, x, y, z):
@@ -94,8 +109,28 @@ def fsi_step(lat, phys, geo, flow, diag, f_in, f_out):
             py = float(y) - 0.5 * float(lat.cy[q])
             cu = float(lat.cx[q]) * geo.wall_ux(px, py, zs) + float(lat.cy[q]) * geo.wall_uy(px, py, zs)
             back = bounced + 6.0 * lat.w[q] * cu
+            if wall * fluid > 0.5:
+                # Interpolated bounce-back (Bouzidi): the wall's exact place on the link, so the
+                # forces change smoothly as the wing moves through the lattice.
+                delta = geo.wall_fraction(x, y, z, lat.cx[q], lat.cy[q], zs)
+                px = float(x) - delta * float(lat.cx[q])
+                py = float(y) - delta * float(lat.cy[q])
+                cu = float(lat.cx[q]) * geo.wall_ux(px, py, zs) + float(lat.cy[q]) * geo.wall_uy(px, py, zs)
+                if delta >= 0.5:
+                    back = (bounced + (2.0 * delta - 1.0) * f_in[q * lat.n + idx] + 6.0 * lat.w[q] * cu) / (2.0 * delta)
+                else:
+                    xn = (x + lat.cx[q] + lat.nx) % lat.nx
+                    yn = (y + lat.cy[q] + lat.ny) % lat.ny
+                    zn = z + lat.cz[q]
+                    zc = min(max(zn, 0), lat.nz - 1)
+                    open_behind = (1.0 if zn == zc else 0.0) * (1.0 - geo.solid(xn, yn, zc))
+                    behind = f_in[o * lat.n + (zc * lat.ny + yn) * lat.nx + xn]
+                    ibb = 2.0 * delta * bounced + (1.0 - 2.0 * delta) * behind + 6.0 * lat.w[q] * cu
+                    back = back + open_behind * (ibb - back)
             f[q] = pulled + wall * (back - pulled)
-            hit = wall * fluid * (bounced + back)
+            # Momentum exchange relative to the fluid at rest: the ambient pressure cancels over the
+            # whole wing, but not over one layer of a bent wing, whose diagonal links cross layers.
+            hit = wall * fluid * (bounced + back - 2.0 * lat.w[q])
             dfx = hit * float(lat.cx[o])
             dfy = hit * float(lat.cy[o])
             fx += dfx
@@ -142,7 +177,7 @@ class FSISolver:
     OUTPUT = ("ux", "uy", "uz", "p", "vmag")
 
     def __init__(self, nx=256, ny=128, nz=104, chord=32.0, span=64.0, ea=0.4, u0=0.08, reynolds=500.0,
-                 collision="les", reduced_velocity=1.5, damping=0.005, hardening=40.0, device="cuda", stride=1,
+                 collision="les", reduced_velocity=3.5, damping=0.005, hardening=200.0, device="cuda", stride=1,
                  fem=None):
         tack.set_default_device(device)
         self.nx, self.ny, self.nz = nx, ny, nz
@@ -152,10 +187,11 @@ class FSISolver:
         self.flow = Flow(u0, 0.75 * nx, 1.0)
         self.collision_name = collision
         self.set_reynolds(reynolds)
-        self.fem = fem or WingFEM(chord=chord, span=span, ea=ea, n_span=int(span // 4))
+        self.fem = fem or WingBeam(chord=chord, span=span, ea=ea)
         self.torsion = self._first_torsion()
         self.mode_h, self.mode_alpha = self.fem.sections_at(np.arange(nz) + 0.5)
         self.structure = Modal(self.fem, self.fem.omega0, damping=damping, hardening=hardening)
+        self.stiffness = 1.0
         self.set_reduced_velocity(reduced_velocity)
         self._kin = ManagedArray(4 * nz)
         self._load = ManagedArray(3 * nz)
@@ -196,14 +232,26 @@ class FSISolver:
         speed_ratio = float(reynolds) / self.reynolds
         self.collision_name = collision
         self.set_reynolds(reynolds)
-        self.set_reduced_velocity(self.reduced_velocity() * speed_ratio)
+        self.design_omega = self.design_omega / speed_ratio
+        self._apply_stiffness()
 
     def reduced_velocity(self):
         return self.u0 / (0.5 * self.chord * self.structure.omega[self.torsion])
 
     def set_reduced_velocity(self, value):
+        """U* of the first torsion mode at the design stiffness."""
         target = self.u0 / (0.5 * self.chord * value)
-        self.structure.omega = self.fem.omega0 * (target / self.fem.omega0[self.torsion])
+        self.design_omega = self.fem.omega0 * (target / self.fem.omega0[self.torsion])
+        self._apply_stiffness()
+
+    def set_stiffness(self, fraction):
+        """The wing's material stiffness as a fraction of its design value: every mode's frequency
+        scales with its square root, so U* scales with 1 / sqrt(fraction)."""
+        self.stiffness = float(fraction)
+        self._apply_stiffness()
+
+    def _apply_stiffness(self):
+        self.structure.omega = self.design_omega * np.sqrt(self.stiffness)
 
     def frequencies(self):
         return self.structure.omega.copy()
