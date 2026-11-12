@@ -29,14 +29,18 @@ FLUTTER_MONITORS = MONITOR_NAMES + ("pitch", "plunge", "reduced_velocity")
 
 
 class WingChannel:
-    """The wing surface, extruded across the span, as quads in chord units."""
+    """The wing surface, extruded across the span and capped at both ends, in chord units."""
 
     def __init__(self, solver, points=96):
         self.solver = solver
         self.points = points
         n = points
         i = np.arange(n)
-        self.quads = np.stack([i, (i + 1) % n, (i + 1) % n + n, i + n], axis=1).ravel().astype(np.int64)
+        sides = np.stack([i, (i + 1) % n, (i + 1) % n + n, i + n], axis=1).ravel()
+        # Side quads, then a cap at each end of the span so the section reads as a solid face-on.
+        self.connectivity = np.concatenate([sides, i[::-1], i + n]).astype(np.int64)
+        self.sizes = np.concatenate([np.full(n, 4), [n, n]]).astype(np.int64)
+        self.offsets = np.concatenate([[0], np.cumsum(self.sizes)[:-1]]).astype(np.int64)
 
     def __call__(self, channels):
         s = self.solver
@@ -44,7 +48,8 @@ class WingChannel:
         span = (s.out_dims[2] - 1) * s.stride
         xs = np.concatenate([x, x]) / s.chord
         ys = np.concatenate([y, y]) / s.chord
-        zs = np.repeat([0.0, span / s.chord], self.points)
+        # A little past both faces of the grid, so the caps show in front of a grid drawn as a surface.
+        zs = np.repeat([-0.5 / s.chord, (span + 0.5) / s.chord], self.points)
         ch = channels["wing"]
         ch["type"] = "mesh"
         mesh = ch["data"]
@@ -53,8 +58,10 @@ class WingChannel:
             mesh[f"coordsets/coords/values/{axis}"].set(np.ascontiguousarray(column))
         mesh["topologies/mesh/type"] = "unstructured"
         mesh["topologies/mesh/coordset"] = "coords"
-        mesh["topologies/mesh/elements/shape"] = "quad"
-        mesh["topologies/mesh/elements/connectivity"].set(self.quads)
+        mesh["topologies/mesh/elements/shape"] = "polygonal"
+        mesh["topologies/mesh/elements/connectivity"].set(self.connectivity)
+        mesh["topologies/mesh/elements/sizes"].set(self.sizes)
+        mesh["topologies/mesh/elements/offsets"].set(self.offsets)
         pitch = np.full(2 * self.points, np.degrees(s.section.q[1]))
         mesh["fields/pitch/association"] = "vertex"
         mesh["fields/pitch/topology"] = "mesh"
