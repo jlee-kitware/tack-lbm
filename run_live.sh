@@ -4,6 +4,7 @@
 #   ./run_live.sh --collision les --obstacle cylinder --re 300
 #   CASE=cht ./run_live.sh --power 15       (heat sink in SI units, 15 W, conjugate heat transfer with PyMFEM)
 #   CASE=flutter ./run_live.sh --re 500     (wing section on pitch and plunge springs)
+#   CASE=fsi ./run_live.sh --re 500         (elastic cantilever wing, MFEM finite elements in a 3D flow)
 # Both services stop after RUN_LIMIT (default 2h); RUN_LIMIT=infinity disables it.
 set -e
 RUN_LIMIT=${RUN_LIMIT:-2h}
@@ -15,6 +16,10 @@ if [ "$CASE" = cht ]; then
 elif [ "$CASE" = flutter ]; then
   DRIVER=run_flutter.py
   PYTHON=${PYTHON:-$HERE/.venv/bin/python}
+elif [ "$CASE" = fsi ]; then
+  DRIVER=run_fsi.py
+  PYTHON=${PYTHON:-$HERE/.venv/bin/python}
+  MFEM=${MFEM_PY:-$HOME/gitsync/PyMFEM-cpu}
 else
   DRIVER=run_lbm.py
   PYTHON=${PYTHON:-$HERE/.venv/bin/python}
@@ -27,6 +32,10 @@ systemctl --user stop tack-lbm cfd-app 2>/dev/null || true
 systemctl --user reset-failed tack-lbm cfd-app 2>/dev/null || true
 
 . "$HERE/env.sh"
+if [ -n "$MFEM" ]; then
+  export PYTHONPATH="$MFEM:$PYTHONPATH"
+  export LD_LIBRARY_PATH="$MFEM/external/mfem/cmbuild_ser:$LD_LIBRARY_PATH"
+fi
 systemd-run --user --unit tack-lbm --working-directory="$HERE" -p RuntimeMaxSec="$RUN_LIMIT" \
   --setenv=PYTHONPATH="$PYTHONPATH" --setenv=LD_LIBRARY_PATH="$LD_LIBRARY_PATH" \
   -p StandardOutput=truncate:"$LOGS/tack_lbm.log" -p StandardError=inherit \
