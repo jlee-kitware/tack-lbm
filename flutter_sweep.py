@@ -17,12 +17,14 @@ parser.add_argument("--x-alpha", type=float, default=0.1)
 parser.add_argument("--mu", type=float, default=20.0)
 parser.add_argument("--collision", default="les")
 parser.add_argument("--hardening", type=float, default=0.0)
+parser.add_argument("--chord", type=float, default=48.0)
+parser.add_argument("--size", type=int, nargs=3, default=[384, 192, 4])
 args = parser.parse_args()
 
 histories = {}
 for us in args.speeds:
-    s = FlutterSolver(reynolds=args.re, ea=args.ea, x_alpha=args.x_alpha, mu=args.mu, collision=args.collision,
-                      hardening=args.hardening)
+    s = FlutterSolver(*args.size, chord=args.chord, reynolds=args.re, ea=args.ea, x_alpha=args.x_alpha, mu=args.mu,
+                      collision=args.collision, hardening=args.hardening)
     s.set_reduced_velocity(us)
     for _ in range(6000):
         s.step()

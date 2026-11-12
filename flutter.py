@@ -15,7 +15,7 @@ from math import pi
 import numpy as np
 
 import tack
-from lbm import COLLISIONS, D3Q19, FIELDS, Flow, ManagedArray, Quiet, Report
+from lbm import COLLISIONS, D3Q19, FIELDS, Flow, ManagedArray, Quiet, Report, coarsen
 
 
 @tack.device_class
@@ -168,12 +168,15 @@ class Section:
 
 
 class FlutterSolver:
+    OUTPUT = ("ux", "uy", "uz", "p", "vmag")
+
     def __init__(self, nx=384, ny=192, nz=4, chord=48.0, ea=0.4, u0=0.08, reynolds=500.0, collision="les",
-                 device="cuda", **section):
+                 device="cuda", stride=1, **section):
         tack.set_default_device(device)
         self.nx, self.ny, self.nz = nx, ny, nz
         self.lat = D3Q19(nx, ny, nz)
         self.chord, self.u0 = chord, u0
+        self.diameter = chord
         self.flow = Flow(u0, 0.75 * nx, 1.0)
         self.collision_name = collision
         self.set_reynolds(reynolds)
@@ -187,6 +190,13 @@ class FlutterSolver:
         self.fields = {name: ManagedArray(n) for name in FIELDS}
         views = {name: a.tack for name, a in self.fields.items()}
         self.quiet, self.report = Quiet(views), Report(views)
+        self.stride = stride
+        self.out_dims = tuple((d + stride - 1) // stride for d in (nx, ny, nz))
+        if stride > 1:
+            m = self.out_dims[0] * self.out_dims[1] * self.out_dims[2]
+            self.output = {name: ManagedArray(m) for name in self.OUTPUT}
+        else:
+            self.output = {name: self.fields[name] for name in self.OUTPUT}
         wing_init(self.lat, self.geo, self.flow, self.f[0])
         self.step_count = 0
         self.drag = self.lift = self.moment = 0.0
@@ -195,6 +205,34 @@ class FlutterSolver:
         self.reynolds = float(reynolds)
         self.nu = self.u0 * self.chord / self.reynolds
         self.phys = COLLISIONS[self.collision_name](self.nu)
+
+    def set_physics(self, collision, reynolds):
+        """A new air speed at fixed air viscosity and wing: Re and U* both scale with it."""
+        speed_ratio = float(reynolds) / self.reynolds
+        self.collision_name = collision
+        self.set_reynolds(reynolds)
+        if hasattr(self, "section"):
+            self.set_reduced_velocity(self.reduced_velocity() * speed_ratio)
+
+    def update_output(self):
+        if self.stride > 1:
+            mx, my, mz = self.out_dims
+            for name in self.OUTPUT:
+                coarsen(self.lat, self.stride, self.fields[name].tack, self.output[name].tack, mx, my, mz)
+
+    def outline(self, points=96):
+        """The wing's section at its current position, as lattice (x, y) around the contour."""
+        beta = np.linspace(0.0, np.pi, points // 2 + 1)
+        xc = 0.5 * (1.0 - np.cos(beta))
+        half = 0.6 * (0.2969 * np.sqrt(xc) - 0.126 * xc - 0.3516 * xc ** 2 + 0.2843 * xc ** 3 - 0.1036 * xc ** 4)
+        xs = np.concatenate([xc[::-1], xc[1:-1]])
+        ts = np.concatenate([half[::-1], -half[1:-1]])
+        s = (xs - self.geo.ea) * self.chord
+        t = ts * self.chord
+        h, a = self.section.q
+        x = self.geo.x_ea + s * np.cos(a) + t * np.sin(a)
+        y = self.geo.y_ea + h - s * np.sin(a) + t * np.cos(a)
+        return x, y
 
     def reduced_velocity(self):
         return self.u0 / (self.section.b * self.section.omega_alpha)
