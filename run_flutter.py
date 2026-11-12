@@ -31,9 +31,10 @@ FLUTTER_MONITORS = MONITOR_NAMES + ("pitch", "plunge", "reduced_velocity")
 class WingChannel:
     """The wing surface, extruded across the span and capped at both ends, in chord units."""
 
-    def __init__(self, solver, points=96):
+    def __init__(self, solver, points=96, span=None):
         self.solver = solver
         self.points = points
+        self.span = span
         n = points
         i = np.arange(n)
         sides = np.stack([i, (i + 1) % n, (i + 1) % n + n, i + n], axis=1).ravel()
@@ -45,11 +46,13 @@ class WingChannel:
     def __call__(self, channels):
         s = self.solver
         x, y = s.outline(self.points)
-        span = (s.out_dims[2] - 1) * s.stride
+        grid_span = (s.out_dims[2] - 1) * s.stride / s.chord
         xs = np.concatenate([x, x]) / s.chord
         ys = np.concatenate([y, y]) / s.chord
-        # A little past both faces of the grid, so the caps show in front of a grid drawn as a surface.
-        zs = np.repeat([-0.5 / s.chord, (span + 0.5) / s.chord], self.points)
+        # The flow is the same in every spanwise slice, so the wing can be drawn across any span; by
+        # default a little past both faces of the grid, so the caps show in front of it.
+        half = 0.5 * self.span if self.span else 0.5 * grid_span + 0.5 / s.chord
+        zs = np.repeat([0.5 * grid_span - half, 0.5 * grid_span + half], self.points)
         ch = channels["wing"]
         ch["type"] = "mesh"
         mesh = ch["data"]
@@ -83,6 +86,8 @@ def main():
     parser.add_argument("--interval", type=int, default=200, help="steps between Catalyst calls")
     parser.add_argument("--sample", type=int, default=20, help="steps between monitor samples")
     parser.add_argument("--gust", type=float, default=4.0, help="pitch swing in deg given on a speed change")
+    parser.add_argument("--display-span", type=float, default=1.5,
+                        help="span in chords the wing and the vortices are drawn across")
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--catalyst-lib", default=os.path.join(pv_build, "lib", "catalyst"))
     parser.add_argument("--steering-xml", default=os.path.join(here, "steering.xml"))
@@ -100,12 +105,14 @@ def main():
                      f"Re 500 is U* {500 * speed:.2f}, Re 1000 is U* {1000 * speed:.2f}. Each change gives the "
                      f"wing a {args.gust:g} degree gust; below the flutter speed the motion dies away, above it pitch and "
                      f"plunge lock together and grow into a steady oscillation (watch pitch and plunge in the "
-                     f"monitors).")
+                     f"monitors).",
+        gust_doc="A gust that sets the wing pitching: the pitch swing it gives, in degrees. Each new value "
+                 "applies one gust (to repeat the same size, set it to 0 first); the wing starts at rest.")
     # A 2D flow: the vorticity that matters is its z component, signed. Only that one, since it is
     # computed at every Live update.
     derived = DerivedFields(s, {"vorticity_z": ("dot(curl(velocity), kHat)", "cells")})
     adaptor = CatalystAdaptor(os.path.abspath(args.script), s, args.catalyst_lib, xml,
-                              monitor_names=FLUTTER_MONITORS, extra_channels=WingChannel(s), derived=derived)
+                              monitor_names=FLUTTER_MONITORS, extra_channels=WingChannel(s, span=args.display_span), derived=derived)
     print(f"[flutter] {nx}x{ny}x{nz}, chord {s.chord:g} cells, Re {s.reynolds:g}, U* {s.reduced_velocity():.2f}",
           flush=True)
 
@@ -119,9 +126,11 @@ def main():
     signal.signal(signal.SIGINT, stop)
     for _ in range(4000):
         s.step()
-    s.release(np.radians(args.gust) * s.section.omega_alpha)
+    s.release(0.0)
+    adaptor.steered["gust"] = 0.0
     t_report = time.perf_counter()
     calls = 0
+    last_gust = 0.0
     def sample():
         cd, cl, _ = s.coefficients()
         plunge, pitch = s.motion()
@@ -150,6 +159,12 @@ def main():
         if s.reynolds != reynolds:
             s.release(np.radians(args.gust) * s.section.omega_alpha)
             print(f"[steer] U* {s.reduced_velocity():.2f}, gust applied", flush=True)
+        gust = adaptor.steered.get("gust", 0.0)
+        if gust != last_gust:
+            last_gust = gust
+            if gust > 0:
+                s.release(np.radians(gust) * s.section.omega_alpha)
+                print(f"[steer] gust of {gust:g} deg", flush=True)
         calls += 1
         if calls % 10 == 0:
             now = time.perf_counter()

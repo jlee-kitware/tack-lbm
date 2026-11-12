@@ -5,7 +5,13 @@ polydata instead: ``vortex_cores`` (filled regions where the Liutex magnitude is
 fraction of its peak, with the signed ``liutex_z``: positive counterclockwise) and
 ``vorticity_lines`` (isolines of the z vorticity), both on the mid-span section, and
 ``vortices``: those two with the solver's ``wing`` surface in one dataset, so a single display
-colored by ``liutex_z`` shows them all (the wing at 0, the lines faintly by vorticity sign).
+colored by its ``spin`` shows them all: +1 on a counterclockwise vortex, -1 on a clockwise one,
+0 on the wing, and +-0.3 on the lines by the sign of their vorticity.
+
+The flow is two-dimensional, the same in every spanwise slice, so its 3D Liutex isosurfaces are
+the section's cores carried straight along the span. ``vortices`` draws them that way: the cores
+extruded into solid tubes across the span the wing is drawn over, and the vorticity lines on the
+back plane behind them.
 """
 import numpy as np
 
@@ -15,7 +21,8 @@ from paraview.simple import CreateSteerableParameters
 from vtkmodules.numpy_interface import dataset_adapter as dsa
 from vtkmodules.util.numpy_support import numpy_to_vtk
 from vtkmodules.vtkCommonDataModel import vtkCompositeDataSet, vtkPolyData
-from vtkmodules.vtkFiltersCore import vtkAppendPolyData, vtkContourFilter
+from vtkmodules.vtkFiltersCore import vtkAppendPolyData, vtkContourFilter, vtkPolyDataNormals
+from vtkmodules.vtkFiltersModeling import vtkLinearExtrusionFilter
 from vtkmodules.vtkFiltersFlowPaths import vtkLiutex
 from vtkmodules.vtkFiltersGeometry import vtkImageDataGeometryFilter
 from vtkmodules.vtkFiltersGeneral import vtkClipDataSet
@@ -55,6 +62,13 @@ _clip.SetInputConnection(_surface.GetOutputPort())
 _faces.SetInputConnection(_clip.GetOutputPort())
 _contour.SetInputConnection(_surface.GetOutputPort())
 _wing_faces, _append = vtkGeometryFilter(), vtkAppendPolyData()
+_extrude, _normals = vtkLinearExtrusionFilter(), vtkPolyDataNormals()
+_extrude.SetExtrusionTypeToVectorExtrusion()
+_extrude.SetVector(0.0, 0.0, 1.0)
+_extrude.CappingOn()
+_normals.SetInputConnection(_extrude.GetOutputPort())
+_normals.SetFeatureAngle(60.0)
+_normals.SplittingOn()
 
 
 def _image(data):
@@ -74,14 +88,33 @@ def _with_array(data, name, values):
     return out
 
 
-def _lifted(data, dz):
-    """A copy with its points moved dz along z, so coplanar layers do not fight for depth."""
+def _at_z(data, z):
+    """A copy with every point moved to the plane z."""
     out = vtkPolyData()
     out.DeepCopy(data)
     if out.GetNumberOfPoints():
         xyz = dsa.WrapDataObject(out).Points
-        xyz[:, 2] += dz
+        xyz[:, 2] = z
         out.GetPoints().Modified()
+    return out
+
+
+def _tubes(cores_2d, z0, z1):
+    """The section's cores carried straight from z0 to z1, as closed solids with smooth sides."""
+    if not cores_2d.GetNumberOfCells():
+        return cores_2d
+    # Only plain arrays go on: vtkLiutex's outputs can be read-only accelerator arrays, which the
+    # normals filter cannot copy into when it splits points.
+    flat = _at_z(cores_2d, z0)
+    spin = np.array(dsa.WrapDataObject(flat).PointData["liutex_z"], dtype=np.float32)
+    flat.GetPointData().Initialize()
+    flat.GetCellData().Initialize()
+    flat = _with_array(flat, "spin", np.sign(spin))
+    _extrude.SetInputData(flat)
+    _extrude.SetScaleFactor(z1 - z0)
+    _normals.Update()
+    out = vtkPolyData()
+    out.ShallowCopy(_normals.GetOutput())
     return out
 
 
@@ -142,21 +175,24 @@ def catalyst_execute(info):
     _publish(lines, out_lines, info.time)
 
     wing_data = _image(wing.GetClientSideObject().GetOutputDataObject(0))
-    parts = [out_cores]
-    if out_lines.GetNumberOfPoints():
-        sign = np.sign(np.asarray(dsa.WrapDataObject(out_lines).PointData["vorticity_z"]))
-        parts.append(_with_array(_lifted(out_lines, 0.3 * h[2]), "liutex_z", 0.3 * peak * sign))
+    z0, z1 = image.GetBounds()[4:6]
+    parts = []
     if wing_data is not None:
         _wing_faces.SetInputData(wing_data)
         _wing_faces.Modified()
         _wing_faces.Update()
-        parts.append(_with_array(_wing_faces.GetOutput(), "liutex_z",
-                                 np.zeros(_wing_faces.GetOutput().GetNumberOfPoints())))
+        wing_faces = _wing_faces.GetOutput()
+        z0, z1 = wing_faces.GetBounds()[4:6]
+        parts.append(_with_array(wing_faces, "spin", np.zeros(wing_faces.GetNumberOfPoints())))
+    parts.append(_tubes(out_cores, z0, z1))
+    if out_lines.GetNumberOfPoints():
+        sign = np.sign(np.asarray(dsa.WrapDataObject(out_lines).PointData["vorticity_z"]))
+        parts.append(_with_array(_at_z(out_lines, z0), "spin", 0.3 * sign))
     _append.RemoveAllInputs()
     for part in parts:
         _append.AddInputData(part)
     _append.Update()
     out_all = vtkPolyData()
     out_all.ShallowCopy(_append.GetOutput())
-    out_all.GetPointData().SetActiveScalars("liutex_z")
+    out_all.GetPointData().SetActiveScalars("spin")
     _publish(combined, out_all, info.time)
