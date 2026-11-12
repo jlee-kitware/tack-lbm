@@ -1,8 +1,26 @@
-import os
+"""Catalyst pipeline for the wing flutter case: vortex geometry computed in situ.
+
+The grid stays in the solver unless a client asks for it. Each Live update publishes small
+polydata instead: ``vortex_cores`` (filled regions where the Liutex magnitude is above a
+fraction of its peak, with the signed ``liutex_z``: positive counterclockwise) and
+``vorticity_lines`` (isolines of the z vorticity), both on the mid-span section, and
+``vortices``: those two with the solver's ``wing`` surface in one dataset, so a single display
+colored by ``liutex_z`` shows them all (the wing at 0, the lines faintly by vorticity sign).
+"""
+import numpy as np
 
 from paraview import simple
 from paraview.catalyst import Options
 from paraview.simple import CreateSteerableParameters
+from vtkmodules.numpy_interface import dataset_adapter as dsa
+from vtkmodules.util.numpy_support import numpy_to_vtk
+from vtkmodules.vtkCommonDataModel import vtkCompositeDataSet, vtkPolyData
+from vtkmodules.vtkFiltersCore import vtkAppendPolyData, vtkContourFilter
+from vtkmodules.vtkFiltersFlowPaths import vtkLiutex
+from vtkmodules.vtkFiltersGeometry import vtkImageDataGeometryFilter
+from vtkmodules.vtkFiltersGeneral import vtkClipDataSet
+from vtkmodules.vtkFiltersGeometry import vtkGeometryFilter
+from vtkmodules.vtkImagingCore import vtkExtractVOI
 
 options = Options()
 options.EnableCatalystLive = 1
@@ -11,56 +29,134 @@ options.CatalystLiveURL = "localhost:22222"
 options.CatalystLiveWaitForClient = 1
 options.CatalystLiveTrigger = "TimeStep"
 options.CatalystLiveTrigger.UseStartTimeStep = 0
-options.CatalystLiveTrigger.Frequency = 300
+# Every Catalyst call is a Live update, so the solver's --interval sets how often the app sees the
+# wing: a fluttering wing needs well over ten updates per cycle to read as motion.
+options.CatalystLiveTrigger.Frequency = 1
 
-# Registering the channels makes them extractable from a Live client.
-grid = simple.TrivialProducer(registrationName="grid")
-monitors = simple.TrivialProducer(registrationName="monitors")
-wing = simple.TrivialProducer(registrationName="wing")
-derived_status = simple.TrivialProducer(registrationName="derived_status")
+CORE_FRACTION = 0.05
+LINE_FRACTIONS = (0.04, 0.1, 0.25)
 
-# Steerable parameters a Live client can edit; catalyst_results returns them
-# under catalyst/steerable.
+channels = [simple.TrivialProducer(registrationName=name) for name in ("grid", "wing", "monitors", "derived_status")]
+grid = channels[0]
+cores = simple.TrivialProducer(registrationName="vortex_cores")
+lines = simple.TrivialProducer(registrationName="vorticity_lines")
+combined = simple.TrivialProducer(registrationName="vortices")
+wing = channels[1]
 steering = CreateSteerableParameters("LBMSteering")
-# The derived-field expressions, as text, come back under catalyst/derived.
 derived = CreateSteerableParameters("LBMDerived", "DerivedParameters", "derived")
 
-# The lean channel: the grid with only speed and the solver-computed cell fields (q_criterion
-# and the steered derived fields), so a Live client can contour vortices without the whole grid.
-lean = simple.PassArrays(registrationName="lean", Input=grid)
-lean.PointDataArrays = ["speed"]
-lean.CellDataArrays = ["q_criterion"]
-LEAN_SKIP = {"vorticity"}
+_voi, _liutex, _layer, _surface = vtkExtractVOI(), vtkLiutex(), vtkExtractVOI(), vtkImageDataGeometryFilter()
+_liutex.SetInputConnection(_voi.GetOutputPort())
+_liutex.SetInputArrayToProcess(0, 0, 0, 0, "velocity")
+_layer.SetInputConnection(_liutex.GetOutputPort())
+_surface.SetInputConnection(_layer.GetOutputPort())
+_clip, _faces, _contour = vtkClipDataSet(), vtkGeometryFilter(), vtkContourFilter()
+_clip.SetInputConnection(_surface.GetOutputPort())
+_faces.SetInputConnection(_clip.GetOutputPort())
+_contour.SetInputConnection(_surface.GetOutputPort())
+_wing_faces, _append = vtkGeometryFilter(), vtkAppendPolyData()
 
-# A solver-side isosurface of q_criterion, on request (TACK_LBM_VORTICES=1): the smallest
-# transfer, but the contour runs on the CPU in the solver loop, so it refreshes less often.
-vortices = None
-VORTEX_EVERY = 5
-if os.environ.get("TACK_LBM_VORTICES") == "1":
-    _q_points = simple.CellDatatoPointData(registrationName="_q_points", Input=grid)
-    _q_points.PassCellData = 0
-    vortices = simple.Contour(registrationName="vortices", Input=_q_points)
-    vortices.ContourBy = ["POINTS", "q_criterion"]
-    vortices.Isosurfaces = [0.005]
-    vortices.ComputeScalars = 1
+
+def _image(data):
+    if isinstance(data, vtkCompositeDataSet):
+        it = data.NewIterator()
+        it.InitTraversal()
+        return it.GetCurrentDataObject() if not it.IsDoneWithTraversal() else None
+    return data
+
+
+def _with_array(data, name, values):
+    out = vtkPolyData()
+    out.ShallowCopy(data)
+    array = numpy_to_vtk(np.ascontiguousarray(values, dtype=np.float32), deep=True)
+    array.SetName(name)
+    out.GetPointData().AddArray(array)
+    return out
+
+
+def _lifted(data, dz):
+    """A copy with its points moved dz along z, so coplanar layers do not fight for depth."""
+    out = vtkPolyData()
+    out.DeepCopy(data)
+    if out.GetNumberOfPoints():
+        xyz = dsa.WrapDataObject(out).Points
+        xyz[:, 2] += dz
+        out.GetPoints().Modified()
+    return out
+
+
+def _publish(producer, data, time):
+    producer.GetClientSideObject().SetOutput(data)
+    producer.SMProxy.MarkModified(producer.SMProxy)
+    producer.UpdatePipeline(time)
 
 
 def catalyst_execute(info):
-    # Catalyst 2 Live does not update channel producers itself, so a Live
-    # extract would otherwise see empty data.
-    grid.UpdatePipeline(info.time)
-    monitors.UpdatePipeline(info.time)
-    wing.UpdatePipeline(info.time)
-    derived_status.UpdatePipeline(info.time)
-    cells = [name for name in grid.CellData.keys() if name not in LEAN_SKIP]
-    if cells != list(lean.CellDataArrays):
-        lean.CellDataArrays = cells
-    lean.UpdatePipeline(info.time)
-    if vortices is not None and info.cycle // 100 % VORTEX_EVERY == 0:
-        _q_points.UpdatePipeline(info.time)
-        q_max = _q_points.PointData["q_criterion"].GetRange()[1]
-        if q_max > 0:
-            vortices.Isosurfaces = [0.03 * q_max]
-        vortices.UpdatePipeline(info.time)
-    if info.cycle % 1000 == 0:
-        print(f"[catalyst] cycle {info.cycle} time {info.time:.3f}", flush=True)
+    # Catalyst 2 Live does not update channel producers itself.
+    for producer in channels:
+        producer.UpdatePipeline(info.time)
+    image = _image(grid.GetClientSideObject().GetOutputDataObject(0))
+    if image is None or image.GetPointData().GetArray("velocity") is None:
+        return
+    i0, i1, j0, j1, k0, k1 = image.GetExtent()
+    k = (k0 + k1) // 2
+    _voi.SetInputData(image)
+    # The solver refills the same arrays in place, so the image's modified time does not move.
+    _voi.Modified()
+    _voi.SetVOI(i0, i1, j0, j1, max(k0, k - 1), min(k1, k + 1))
+    _layer.SetVOI(i0, i1, j0, j1, k, k)
+    _surface.Update()
+    section = _surface.GetOutput()
+    pd = dsa.WrapDataObject(section).PointData
+    liutex = np.asarray(pd["Liutex"])
+    pd_vtk = section.GetPointData()
+    signed = numpy_to_vtk(np.ascontiguousarray(liutex[:, 2]), deep=True)
+    signed.SetName("liutex_z")
+    pd_vtk.AddArray(signed)
+    u = np.asarray(pd["velocity"]).reshape(j1 - j0 + 1, i1 - i0 + 1, 3)
+    h = image.GetSpacing()
+    wz = np.gradient(u[..., 1], h[0], axis=1) - np.gradient(u[..., 0], h[1], axis=0)
+    vort = numpy_to_vtk(np.ascontiguousarray(wz.ravel()), deep=True)
+    vort.SetName("vorticity_z")
+    pd_vtk.AddArray(vort)
+
+    peak = float(np.abs(liutex[:, 2]).max())
+    pd_vtk.SetActiveScalars("LiutexMagnitude")
+    _clip.SetValue(CORE_FRACTION * peak if peak > 0 else 1e30)
+    _faces.Update()
+    out_cores = vtkPolyData()
+    out_cores.ShallowCopy(_faces.GetOutput())
+    out_cores.GetPointData().SetActiveScalars("liutex_z")
+
+    w = float(np.abs(wz).max())
+    _contour.SetInputArrayToProcess(0, 0, 0, 0, "vorticity_z")
+    levels = [s * f * w for f in LINE_FRACTIONS for s in (-1.0, 1.0)]
+    _contour.SetNumberOfContours(len(levels))
+    for n, value in enumerate(levels):
+        _contour.SetValue(n, value)
+    _contour.Update()
+    out_lines = vtkPolyData()
+    out_lines.ShallowCopy(_contour.GetOutput())
+
+    _publish(cores, out_cores, info.time)
+    _publish(lines, out_lines, info.time)
+
+    wing_data = _image(wing.GetClientSideObject().GetOutputDataObject(0))
+    parts = [out_cores]
+    if out_lines.GetNumberOfPoints():
+        sign = np.sign(np.asarray(dsa.WrapDataObject(out_lines).PointData["vorticity_z"]))
+        parts.append(_with_array(_lifted(out_lines, 0.3 * h[2]), "liutex_z", 0.3 * peak * sign))
+    if wing_data is not None:
+        _wing_faces.SetInputData(wing_data)
+        _wing_faces.Modified()
+        _wing_faces.Update()
+        parts.append(_with_array(_wing_faces.GetOutput(), "liutex_z",
+                                 np.zeros(_wing_faces.GetOutput().GetNumberOfPoints())))
+    _append.RemoveAllInputs()
+    for part in parts:
+        _append.AddInputData(part)
+    _append.Update()
+    out_all = vtkPolyData()
+    out_all.ShallowCopy(_append.GetOutput())
+    out_all.GetPointData().SetActiveScalars("liutex_z")
+    _publish(combined, out_all, info.time)

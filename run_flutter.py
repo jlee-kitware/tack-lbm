@@ -20,7 +20,7 @@ import time
 
 import numpy as np
 
-from derived import DEFAULTS, DerivedFields
+from derived import DerivedFields
 from flutter import FlutterSolver
 from run_lbm import MONITOR_NAMES, CatalystAdaptor
 from steering import COLLISION_CODES, write_proxy_xml
@@ -80,8 +80,8 @@ def main():
     parser.add_argument("--hardening", type=float, default=40.0)
     parser.add_argument("--size", type=int, nargs=3, default=[384, 192, 4], metavar=("NX", "NY", "NZ"))
     parser.add_argument("--steps", type=int, default=0, help="0 runs until interrupted")
-    parser.add_argument("--interval", type=int, default=500, help="steps between Catalyst calls")
-    parser.add_argument("--sample", type=int, default=50, help="steps between monitor samples")
+    parser.add_argument("--interval", type=int, default=200, help="steps between Catalyst calls")
+    parser.add_argument("--sample", type=int, default=20, help="steps between monitor samples")
     parser.add_argument("--gust", type=float, default=4.0, help="pitch swing in deg given on a speed change")
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--catalyst-lib", default=os.path.join(pv_build, "lib", "catalyst"))
@@ -101,8 +101,9 @@ def main():
                      f"wing a {args.gust:g} degree gust; below the flutter speed the motion dies away, above it pitch and "
                      f"plunge lock together and grow into a steady oscillation (watch pitch and plunge in the "
                      f"monitors).")
-    # A 2D flow: the vorticity that matters is its z component, signed.
-    derived = DerivedFields(s, {**DEFAULTS, "vorticity_z": ("dot(curl(velocity), kHat)", "cells")})
+    # A 2D flow: the vorticity that matters is its z component, signed. Only that one, since it is
+    # computed at every Live update.
+    derived = DerivedFields(s, {"vorticity_z": ("dot(curl(velocity), kHat)", "cells")})
     adaptor = CatalystAdaptor(os.path.abspath(args.script), s, args.catalyst_lib, xml,
                               monitor_names=FLUTTER_MONITORS, extra_channels=WingChannel(s), derived=derived)
     print(f"[flutter] {nx}x{ny}x{nz}, chord {s.chord:g} cells, Re {s.reynolds:g}, U* {s.reduced_velocity():.2f}",
@@ -150,9 +151,9 @@ def main():
             s.release(np.radians(args.gust) * s.section.omega_alpha)
             print(f"[steer] U* {s.reduced_velocity():.2f}, gust applied", flush=True)
         calls += 1
-        if calls % 4 == 0:
+        if calls % 10 == 0:
             now = time.perf_counter()
-            print(f"[flutter] step {step}  {4 * args.interval / (now - t_report):.0f} steps/s  "
+            print(f"[flutter] step {step}  {10 * args.interval / (now - t_report):.0f} steps/s  "
                   f"U* {s.reduced_velocity():.2f}  pitch {pitch:+.2f} deg  plunge {plunge:+.3f} b", flush=True)
             t_report = now
     adaptor.finalize()
