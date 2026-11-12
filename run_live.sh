@@ -47,6 +47,7 @@ systemd-run --user --unit cfd-app --working-directory="$CFD" -p RuntimeMaxSec="$
   --setenv=TRAME_DEFAULT_HOST=0.0.0.0 \
   --setenv=CATALYST_LIVE_PROXIES="$HERE/steering.xml" \
   --setenv=CFD_MCP_VIEW_CRITIC="${CFD_MCP_VIEW_CRITIC:-1}" \
+  --setenv=CFD_CONNECT_PAUSED="${CFD_CONNECT_PAUSED:-0}" \
   --setenv=LD_LIBRARY_PATH="$HOME/gitsync/anari_install/lib" \
   -p StandardOutput=truncate:"$LOGS/app_8080.log" -p StandardError=inherit \
   "$PV_BUILD/bin/pvpython" --force-offscreen-rendering --venv .venv cfd_chat.py --live --server --timeout=0

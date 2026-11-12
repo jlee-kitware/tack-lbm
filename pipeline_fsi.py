@@ -7,8 +7,8 @@ The grid stays in the solver unless a client asks for it. Each Live update publi
                   vortices of a nose-down swing), -1 clockwise, near 0 for the streamwise tip vortex
 ``vortices``      the cores and the deformed finite element ``wing`` (spin 0) in one dataset
 
-The lattice holds half of the wing, clamped at the symmetry plane; both outputs are mirrored
-across that plane, so they show the whole wing and both tip vortices.
+The lattice holds half of the wing, clamped at the symmetry plane: a semi-span model on a wall,
+as flutter models are tested in wind tunnels. MIRROR shows the whole wing instead.
 """
 import numpy as np
 
@@ -38,7 +38,7 @@ options.CatalystLiveTrigger.Frequency = 1
 # chords from the wing, where the boundary layer's shear reads as rotation on this grid.
 CORE_LEVEL = 0.2
 WALL_BAND = 0.15
-MIRROR = True
+MIRROR = False
 
 channels = [simple.TrivialProducer(registrationName=name) for name in ("grid", "wing", "monitors")]
 grid, wing = channels[0], channels[1]

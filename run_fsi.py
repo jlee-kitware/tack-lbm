@@ -99,8 +99,8 @@ def main():
                      f"velocity U* = U / (b omega_alpha) of the wing's first torsion mode scales with it: at the "
                      f"design stiffness Re 500 is U* {500 * speed:.2f}, Re 1000 is U* {1000 * speed:.2f}. Each "
                      f"change gives the wing a {args.gust:g} degree gust.",
-        gust_doc="A gust that twists the wing: the tip pitch swing it gives, in degrees. Each new value applies "
-                 "one gust (to repeat the same size, set it to 0 first); the wing starts at rest.",
+        gust_doc="A gust that twists the wing: the tip pitch swing it gives, in degrees. Each request applies "
+                 "one gust, including a repeat of the same size; the wing starts at rest.",
         stiffness_doc=f"The wing's material stiffness, in percent of its design value (100). Its vibration "
                       f"frequencies scale with the square root, so the reduced velocity U* scales with "
                       f"10 / sqrt(stiffness): 100 is U* {ustar:.2f}, 50 is U* {ustar * 2 ** 0.5:.2f}, 25 is U* "
@@ -168,7 +168,7 @@ def main():
             last_gust = gust
             if gust > 0:
                 s.gust(gust)
-                print(f"[steer] gust of {gust:g} deg", flush=True)
+                print(f"[steer] gust of {gust:.1f} deg", flush=True)
         calls += 1
         if calls % 10 == 0:
             now = time.perf_counter()
