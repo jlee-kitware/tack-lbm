@@ -6,6 +6,7 @@
 #   CASE=flutter ./run_live.sh --re 500     (wing section on pitch and plunge springs)
 #   CASE=fsi ./run_live.sh --re 500         (elastic cantilever wing, MFEM finite elements in a 3D flow)
 # Both services stop after RUN_LIMIT (default 2h); RUN_LIMIT=infinity disables it.
+# CATALYST_ASYNC_ENABLED=1 runs the Catalyst pipeline on a worker thread beside the solver.
 set -e
 RUN_LIMIT=${RUN_LIMIT:-2h}
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -38,6 +39,7 @@ if [ -n "$MFEM" ]; then
 fi
 systemd-run --user --unit tack-lbm --working-directory="$HERE" -p RuntimeMaxSec="$RUN_LIMIT" \
   --setenv=PYTHONPATH="$PYTHONPATH" --setenv=LD_LIBRARY_PATH="$LD_LIBRARY_PATH" \
+  --setenv=CATALYST_ASYNC_ENABLED="${CATALYST_ASYNC_ENABLED:-0}" \
   -p StandardOutput=truncate:"$LOGS/tack_lbm.log" -p StandardError=inherit \
   "$PYTHON" -u "$DRIVER" "$@"
 

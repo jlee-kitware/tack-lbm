@@ -16,8 +16,9 @@ from paraview import simple
 from paraview.catalyst import Options
 from paraview.simple import CreateSteerableParameters
 from vtkmodules.numpy_interface import dataset_adapter as dsa
+from vtkmodules.util import numpy_support
 from vtkmodules.util.numpy_support import numpy_to_vtk
-from vtkmodules.vtkCommonCore import vtkPoints
+from vtkmodules.vtkCommonCore import vtkFloatArray, vtkPoints
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkCompositeDataSet, vtkImageData, vtkPolyData
 from vtkmodules.vtkFiltersCore import (vtkAppendPolyData, vtkClipPolyData, vtkFlyingEdges3D,
                                        vtkImplicitPolyDataDistance, vtkPolyDataNormals)
@@ -115,14 +116,24 @@ def _publish(producer, data, time):
 
 
 def _core_surface(image, wing_faces):
-    _liutex.SetInputData(image)
+    # Liutex works on a plain copy of the velocity: the solver's channel arrays can arrive as
+    # accelerator arrays, which threaded VTK filters must not read.
+    # A deep copy into an interleaved array reads any layout the channel arrives in (with async
+    # Catalyst it is a structure-of-arrays copy, which numpy cannot wrap).
+    interleaved = vtkFloatArray()
+    interleaved.DeepCopy(image.GetPointData().GetArray("velocity"))
+    velocity = numpy_support.vtk_to_numpy(interleaved).reshape(-1, 3).copy()
+    source = vtkImageData()
+    source.CopyStructure(image)
+    source.GetPointData().AddArray(_plain("velocity", velocity))
+    _liutex.SetInputData(source)
     _liutex.Modified()
     _liutex.Update()
     pd = dsa.WrapDataObject(_liutex.GetOutput()).PointData
-    liutex = np.asarray(pd["Liutex"])
+    liutex = np.array(pd["Liutex"])
     mag = np.linalg.norm(liutex, axis=1)
     nx, ny, nz = image.GetDimensions()
-    inflow = float(np.asarray(pd["velocity"])[:, 0].reshape(nz, ny, nx)[:, :, 0].mean())
+    inflow = float(velocity[:, 0].reshape(nz, ny, nx)[:, :, 0].mean())
     if inflow <= 0.0 or mag.max() < CORE_LEVEL * inflow:
         return vtkPolyData()
     # A plain image with plain arrays: vtkLiutex's outputs can be read-only accelerator arrays.
