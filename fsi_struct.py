@@ -174,19 +174,23 @@ class WingFEM:
 
 
 class Modal:
-    """Modal dynamics q'' + 2 zeta w q' + w^2 q (1 + H a^2) = Q, mass normalized modes. The wing
-    stiffens in torsion: ``a`` is the tip twist of the whole motion, in radians."""
+    """Modal dynamics q'' + 2 zeta w q' + w^2 q + dV/dq = Q, mass normalized modes. The wing
+    stiffens in torsion through the potential V = K a^4 / 4, where ``a`` is the tip twist of the
+    whole motion in radians and K makes the torsion mode alone stiffen as w^2 (1 + H a^2). Being
+    a potential, the stiffening stores energy and gives it back over a cycle."""
 
-    def __init__(self, fem, omega, damping=0.0, hardening=40.0):
+    def __init__(self, fem, omega, damping=0.0, hardening=40.0, torsion=1):
         self.fem = fem
         self.omega = np.array(omega, float)
-        self.damping, self.hardening = damping, hardening
+        self.damping, self.hardening, self.torsion = damping, hardening, torsion
         self.tip_twist = np.asarray(fem.alpha[:, -1], float)
         self.q = np.zeros(len(omega))
         self.v = np.zeros(len(omega))
 
     def step(self, force, dt=1.0):
         a = float(self.tip_twist @ self.q)
-        spring = self.omega ** 2 * self.q * (1.0 + self.hardening * a * a)
+        t = self.tip_twist[self.torsion]
+        k = self.hardening * (self.omega[self.torsion] / t) ** 2
+        spring = self.omega ** 2 * self.q + k * a ** 3 * self.tip_twist
         self.v += dt * (force - spring - 2.0 * self.damping * self.omega * self.v)
         self.q += dt * self.v

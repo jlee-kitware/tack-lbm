@@ -194,7 +194,8 @@ class FSISolver:
         self.fem = fem or WingBeam(chord=chord, span=span, ea=ea)
         self.torsion = self._first_torsion()
         self.mode_h, self.mode_alpha = self.fem.sections_at(np.arange(nz) + 0.5)
-        self.structure = Modal(self.fem, self.fem.omega0, damping=damping, hardening=hardening)
+        self.structure = Modal(self.fem, self.fem.omega0, damping=damping, hardening=hardening,
+                               torsion=self.torsion)
         self.stiffness = 1.0
         self.set_reduced_velocity(reduced_velocity)
         self._kin = ManagedArray(4 * nz)
