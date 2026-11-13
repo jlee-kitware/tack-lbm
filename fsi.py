@@ -2,7 +2,8 @@
 an elastic NACA 0012 wing whose deflection comes from an MFEM finite element model.
 
 The root sits on a symmetry plane (z = -1/2) and the top of the domain is free slip, so the
-lattice holds one half of a wing clamped at its centre. Every step:
+lattice holds one half of a wing clamped at its centre. Air enters at x = 0 as the free stream
+and leaves through an outflow boundary at x = nx - 1. Every step:
 
   fluid -> structure   lift and pitching moment per lattice layer by momentum exchange,
                        projected on the wing's vibration modes as generalized forces
@@ -96,7 +97,9 @@ def fsi_step(lat, phys, geo, flow, diag, f_in, f_out):
         links = 0.0
         for q in range(lat.Q):
             o = lat.opp[q]
-            xs = (x - lat.cx[q] + lat.nx) % lat.nx
+            xr = x - lat.cx[q]
+            xs = min(max(xr, 0), lat.nx - 1)
+            inflow = 1.0 if xr < 0 else 0.0
             ys = (y - lat.cy[q] + lat.ny) % lat.ny
             zr = z - lat.cz[q]
             flip = (1 if zr < 0 else 0) + (1 if zr > lat.nz - 1 else 0)
@@ -104,6 +107,7 @@ def fsi_step(lat, phys, geo, flow, diag, f_in, f_out):
             qs = q + flip * (geo.reflect[q] - q)
             wall = geo.solid(xs, ys, zs)
             pulled = f_in[qs * lat.n + (zs * lat.ny + ys) * lat.nx + xs]
+            pulled = pulled + inflow * (lat.feq(q, 1.0, flow.u0, 0.0, 0.0) - pulled)
             bounced = f_in[o * lat.n + idx]
             px = float(x) - 0.5 * float(lat.cx[q])
             py = float(y) - 0.5 * float(lat.cy[q])
@@ -154,14 +158,14 @@ def fsi_step(lat, phys, geo, flow, diag, f_in, f_out):
         uy = fluid * jy / rho
         uz = fluid * jz / rho
         phys.collide(lat, f, post, rho, ux, uy, uz)
+        # Ahead of the outlet the sponge settles pressure and damps the non-equilibrium part; the
+        # wake keeps its velocity and leaves. Solid nodes take the wall's velocity.
         t = max(0.0, (float(x) - flow.sponge_start) / (float(lat.nx) - flow.sponge_start))
         sigma = max(here, flow.sponge_strength * t * t)
-        target_x = fluid * flow.u0 + here * geo.wall_ux(float(x), float(y), z)
-        target_y = here * geo.wall_uy(float(x), float(y), z)
         rho_s = rho + sigma * (1.0 - rho)
-        ux_s = ux + sigma * (target_x - ux)
-        uy_s = uy + sigma * (target_y - uy)
-        uz_s = (1.0 - sigma) * uz
+        ux_s = ux + here * (geo.wall_ux(float(x), float(y), z) - ux)
+        uy_s = uy + here * (geo.wall_uy(float(x), float(y), z) - uy)
+        uz_s = (1.0 - here) * uz
         for q in range(lat.Q):
             neq = post[q] - lat.feq(q, rho, ux, uy, uz)
             f_out[q * lat.n + idx] = lat.feq(q, rho_s, ux_s, uy_s, uz_s) + (1.0 - sigma) * neq
