@@ -37,13 +37,13 @@ if [ -n "$MFEM" ]; then
   export PYTHONPATH="$MFEM:$PYTHONPATH"
   export LD_LIBRARY_PATH="$MFEM/external/mfem/cmbuild_ser:$LD_LIBRARY_PATH"
 fi
-systemd-run --user --unit tack-lbm --working-directory="$HERE" -p RuntimeMaxSec="$RUN_LIMIT" \
+systemd-run --user --unit tack-lbm --working-directory="$HERE" -p RuntimeMaxSec="$RUN_LIMIT" -p TimeoutStopSec=5s \
   --setenv=PYTHONPATH="$PYTHONPATH" --setenv=LD_LIBRARY_PATH="$LD_LIBRARY_PATH" \
   --setenv=CATALYST_ASYNC_ENABLED="${CATALYST_ASYNC_ENABLED:-0}" \
   -p StandardOutput=truncate:"$LOGS/tack_lbm.log" -p StandardError=inherit \
   "$PYTHON" -u "$DRIVER" "$@"
 
-systemd-run --user --unit cfd-app --working-directory="$CFD" -p RuntimeMaxSec="$RUN_LIMIT" \
+systemd-run --user --unit cfd-app --working-directory="$CFD" -p RuntimeMaxSec="$RUN_LIMIT" -p TimeoutStopSec=5s \
   --setenv=TRAME_DEFAULT_HOST=0.0.0.0 \
   --setenv=CATALYST_LIVE_PROXIES="$HERE/steering.xml" \
   --setenv=CFD_MCP_VIEW_CRITIC="${CFD_MCP_VIEW_CRITIC:-1}" \
