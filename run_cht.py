@@ -8,8 +8,10 @@ velocity in m/s, pressure in Pa, temperatures in degC, power and heat flow in W.
 Channels: ``grid`` (velocity, pressure, speed, temperature), ``solid`` (the MFEM
 temperature in the heat sink, its elements subdivided by Tack into linear
 hexahedra) and ``monitors`` (residuals, forces, heater power, heat into the air,
-peak and mean sink temperature, inflow air temperature). Steerable: Reynolds number,
-collision model, heater power in W.
+peak and mean sink temperature, inflow air temperature). With ``--tack-streamlines``,
+``streamlines`` too: paths from a rake upstream of the sink, traced by Tack in situ on
+the GPU each Catalyst call, with speed and temperature (``streamline_channel.py``).
+Steerable: Reynolds number, collision model, heater power in W.
 """
 
 import argparse
@@ -95,6 +97,8 @@ def main():
     parser.add_argument("--stride", type=int, default=2)
     parser.add_argument("--catalyst-lib", default=os.path.join(pv_build, "lib", "catalyst"))
     parser.add_argument("--steering-xml", default=os.path.join(here, "steering.xml"))
+    parser.add_argument("--tack-streamlines", action="store_true",
+                        help="trace streamlines in situ with Tack and publish them as a channel")
     args = parser.parse_args()
 
     t0 = time.perf_counter()
@@ -123,8 +127,23 @@ def main():
                   "solid_t_max, solid_t_mean and t_ambient in degC, power and heat_flux in W.",
         reynolds_doc=f"Reynolds number based on the {12 * units.dx * 1000:.0f} mm fin pitch and the inflow "
                      f"air speed: Re 300 is {300 * speed_per_re:.2f} m/s, Re 1000 is {1000 * speed_per_re:.2f} m/s.")
+    extra_channels = SolidChannel(cht, units)
+    if args.tack_streamlines:
+        from streamline_channel import StreamlineChannel, rake
+
+        g = fluid.geo
+        seeds = rake(g.x0 - 6.0, (g.y_base + 0.5, g.y_top + 0.3 * (g.y_top - g.y_base)),
+                     (g.z0 + 1.0, g.z1 - 1.0))
+        solid, streams = extra_channels, StreamlineChannel(fluid, seeds, scales=lambda: adaptor.scales)
+
+        def extra_channels(channels):
+            solid(channels)
+            streams(channels)
+
+        # The Catalyst script registers the channel for Live clients.
+        os.environ["CHT_STREAMLINES"] = "1"
     adaptor = CatalystAdaptor(os.path.abspath(args.script), fluid, args.catalyst_lib, xml,
-                              monitor_names=CHT_MONITORS, extra_channels=SolidChannel(cht, units),
+                              monitor_names=CHT_MONITORS, extra_channels=extra_channels,
                               scales=scales())
     adaptor.steered["power"] = watts
 

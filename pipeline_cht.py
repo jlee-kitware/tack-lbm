@@ -1,3 +1,5 @@
+import os
+
 from paraview import simple
 from paraview.catalyst import Options
 from paraview.simple import CreateSteerableParameters
@@ -12,7 +14,8 @@ options.CatalystLiveTrigger.UseStartTimeStep = 0
 options.CatalystLiveTrigger.Frequency = 300
 
 # Registering the channels makes them extractable from a Live client.
-channels = [simple.TrivialProducer(registrationName=name) for name in ("grid", "solid", "monitors")]
+names = ("grid", "solid", "monitors") + (("streamlines",) if os.environ.get("CHT_STREAMLINES") else ())
+channels = [simple.TrivialProducer(registrationName=name) for name in names]
 steering = CreateSteerableParameters("LBMSteering")
 
 
