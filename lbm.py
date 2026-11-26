@@ -30,6 +30,11 @@ def _opposite():
             for q in range(19)]
 
 
+def _mirror_y():
+    return [next(p for p in range(19) if (CX[p], CY[p], CZ[p]) == (CX[q], -CY[q], CZ[q]))
+            for q in range(19)]
+
+
 @tack.device_class
 class D3Q19:
     Q = 19
@@ -42,6 +47,7 @@ class D3Q19:
         self.cz = tack.array(np.array(CZ, np.int32))
         self.w = tack.array(np.array(W, np.float32))
         self.opp = tack.array(np.array(_opposite(), np.int32))
+        self.miry = tack.array(np.array(_mirror_y(), np.int32))
 
     @tack.func
     def feq(self, q, rho, ux, uy, uz):
@@ -150,6 +156,18 @@ class Cylinder:
     def sink(self, x, y, z):
         return self.solid(x, y, z)
 
+    @tack.func
+    def wall_vel_x(self, x, y, z):
+        return -(float(y) - self.y) / self.r
+
+    @tack.func
+    def wall_vel_y(self, x, y, z):
+        return (float(x) - self.x) / self.r
+
+    @tack.func
+    def wall_vel_z(self, x, y, z):
+        return 0.0
+
 
 @tack.device_class
 class Sphere:
@@ -167,6 +185,18 @@ class Sphere:
     def sink(self, x, y, z):
         return self.solid(x, y, z)
 
+    @tack.func
+    def wall_vel_x(self, x, y, z):
+        return 0.0
+
+    @tack.func
+    def wall_vel_y(self, x, y, z):
+        return 0.0
+
+    @tack.func
+    def wall_vel_z(self, x, y, z):
+        return 0.0
+
 
 @tack.device_class
 class Box:
@@ -183,6 +213,18 @@ class Box:
     @tack.func
     def sink(self, x, y, z):
         return self.solid(x, y, z)
+
+    @tack.func
+    def wall_vel_x(self, x, y, z):
+        return 0.0
+
+    @tack.func
+    def wall_vel_y(self, x, y, z):
+        return 0.0
+
+    @tack.func
+    def wall_vel_z(self, x, y, z):
+        return 0.0
 
 
 @tack.device_class
@@ -220,6 +262,18 @@ class HeatSink:
     def solid(self, x, y, z):
         wall = max(1.0 if y <= 0 else 0.0, 1.0 if y >= self.ny - 1 else 0.0)
         return max(wall, self.sink(x, y, z))
+
+    @tack.func
+    def wall_vel_x(self, x, y, z):
+        return 0.0
+
+    @tack.func
+    def wall_vel_y(self, x, y, z):
+        return 0.0
+
+    @tack.func
+    def wall_vel_z(self, x, y, z):
+        return 0.0
 
 
 # Thermal variants. ``enabled`` is a class constant, so runs without heat
@@ -286,11 +340,44 @@ class Report(Quiet):
 
 
 @tack.device_class
+class PeriodicY:
+    """Periodic in y: an infinite column of obstacles."""
+
+    @tack.func
+    def source_y(self, y, cy, ny):
+        return (y - cy + ny) % ny
+
+    @tack.func
+    def source_q(self, q, qm, y, cy, ny):
+        return q
+
+
+@tack.device_class
+class SlipY:
+    """Free-slip walls halfway outside y = 0 and y = ny - 1 (specular reflection)."""
+
+    @tack.func
+    def source_y(self, y, cy, ny):
+        yr = y - cy
+        out = (1 if yr < 0 else 0) + (1 if yr >= ny else 0)
+        return yr + out * (y - yr)
+
+    @tack.func
+    def source_q(self, q, qm, y, cy, ny):
+        yr = y - cy
+        out = (1 if yr < 0 else 0) + (1 if yr >= ny else 0)
+        return q + out * (qm - q)
+
+
+@tack.device_class
 class Flow:
-    def __init__(self, u0, sponge_start, sponge_strength):
+    def __init__(self, u0, sponge_start, sponge_strength, omega_rot=None, side=None):
         self.u0 = u0
         self.sponge_start = sponge_start
         self.sponge_strength = sponge_strength
+        # Cylinder surface speed: a size-1 array so host-side writes reach the kernel.
+        self.omega_rot = tack.zeros((1,)) if omega_rot is None else omega_rot
+        self.side = PeriodicY() if side is None else side
 
 
 @tack.kernel
@@ -323,13 +410,23 @@ def lbm_step(lat, phys, geo, flow, diag, f_in, f_out, heat, g_in, g_out):
         for q in range(lat.Q):
             o = lat.opp[q]
             xs = (x - lat.cx[q] + lat.nx) % lat.nx
-            ys = (y - lat.cy[q] + lat.ny) % lat.ny
+            ys = flow.side.source_y(y, lat.cy[q], lat.ny)
+            qs = flow.side.source_q(q, lat.miry[q], y, lat.cy[q], lat.ny)
             zs = (z - lat.cz[q] + lat.nz) % lat.nz
             wall = geo.solid(xs, ys, zs)
-            pulled = f_in[q * lat.n + (zs * lat.ny + ys) * lat.nx + xs]
+            omega = flow.omega_rot[0]
+            # wall velocity at the link midpoint, where halfway bounce-back puts the wall
+            xm = float(x) - 0.5 * float(lat.cx[q])
+            ym = float(y) - 0.5 * float(lat.cy[q])
+            zm = float(z) - 0.5 * float(lat.cz[q])
+            uw_x = omega * geo.wall_vel_x(xm, ym, zm)
+            uw_y = omega * geo.wall_vel_y(xm, ym, zm)
+            uw_z = omega * geo.wall_vel_z(xm, ym, zm)
+            c_dot_uw = float(lat.cx[q]) * uw_x + float(lat.cy[q]) * uw_y + float(lat.cz[q]) * uw_z
+            pulled = f_in[qs * lat.n + (zs * lat.ny + ys) * lat.nx + xs]
             bounced = f_in[o * lat.n + idx]
-            f[q] = pulled + wall * (bounced - pulled)
-            hit = 2.0 * wall * fluid * bounced
+            f[q] = pulled + wall * (bounced - pulled + 6.0 * lat.w[q] * c_dot_uw)
+            hit = wall * fluid * (2.0 * bounced + 6.0 * lat.w[q] * c_dot_uw)
             mx += hit * float(lat.cx[o])
             my += hit * float(lat.cy[o])
             mz += hit * float(lat.cz[o])
@@ -453,13 +550,16 @@ class Solver:
 
     def __init__(self, nx=384, ny=128, nz=64, collision="les", obstacle="cylinder",
                  reynolds=300.0, u0=0.08, diameter=24.0, device="cuda", stride=1,
-                 heat=False, prandtl=0.7):
+                 heat=False, prandtl=0.7, lateral="periodic"):
         tack.set_default_device(device)
+        self.lateral = lateral
         self.nx, self.ny, self.nz = nx, ny, nz
         self.lat = D3Q19(nx, ny, nz)
         self.u0, self.diameter = u0, diameter
         self.step_count = 0
-        self.flow = Flow(u0, 0.75 * nx, 1.0)
+        self._omega_state = ManagedArray(1)
+        self.flow = Flow(u0, 0.75 * nx, 1.0, self._omega_state.tack,
+                         {"periodic": PeriodicY, "slip": SlipY}[lateral]())
         self.set_obstacle(obstacle)
         self.set_physics(collision, reynolds)
         n = self.lat.n
@@ -514,6 +614,14 @@ class Solver:
         self.collision_name, self.reynolds = collision, float(reynolds)
         self.nu = self.u0 * self.diameter / self.reynolds
         self.phys = COLLISIONS[collision](self.nu)
+
+    def set_actuation(self, omega_rot):
+        """Set the cylinder surface speed in lattice units (alpha * u0)."""
+        self._omega_state.numpy[0] = float(omega_rot)
+
+    @property
+    def omega_rot(self):
+        return float(self._omega_state.numpy[0])
         if getattr(self, "heat_enabled", False):
             self.heat = Heat(self._heat_arrays, self.nu / self.prandtl, self.nu)
 
