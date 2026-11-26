@@ -78,6 +78,15 @@ GUST_XML = """      <DoubleVectorProperty name="Gust" label="Gust" command="SetT
       </DoubleVectorProperty>"""
 
 
+ROTATION_XML = """      <DoubleVectorProperty name="Rotation" label="Cylinder rotation" command="SetTuple1Double"
+                            use_index="1" clean_command="Clear" initial_string="rotation"
+                            number_of_elements_per_command="1" repeat_command="1"
+                            number_of_elements="1" default_values="0">
+        <DoubleRangeDomain name="range" min="-6" max="6" />
+        <Documentation>{rotation_doc}</Documentation>
+      </DoubleVectorProperty>"""
+
+
 STIFFNESS_XML = """      <DoubleVectorProperty name="Stiffness" label="Wing stiffness" command="SetTuple1Double"
                             use_index="1" clean_command="Clear" initial_string="stiffness"
                             number_of_elements_per_command="1" repeat_command="1"
@@ -90,12 +99,14 @@ STIFFNESS_XML = """      <DoubleVectorProperty name="Stiffness" label="Wing stif
 def write_proxy_xml(path, reynolds, collision, power=None, derived=False, power_max=500.0,
                     power_doc="Heat released by the chip under the heat sink's base, in lattice units.",
                     reynolds_doc="Reynolds number based on cylinder diameter and inflow speed.", gust_doc=None,
-                    stiffness_doc=None):
+                    stiffness_doc=None, rotation_doc=None):
     extra = POWER_XML.format(power=power, power_max=power_max, power_doc=power_doc) if power is not None else ""
     if gust_doc:
         extra += GUST_XML.format(gust_doc=gust_doc)
     if stiffness_doc:
         extra += STIFFNESS_XML.format(stiffness_doc=stiffness_doc)
+    if rotation_doc:
+        extra += ROTATION_XML.format(rotation_doc=rotation_doc)
     proxies = DERIVED_XML if derived else ""
     with open(path, "w") as f:
         f.write(PROXY_XML.format(reynolds=reynolds, collision=COLLISION_CODES[collision], extra=extra,
@@ -127,7 +138,7 @@ def read_steering(results):
     data = results["catalyst/steerable/data"]
     for i in range(data.number_of_children()):
         part = data.child(i)
-        for key in ("reynolds", "collision", "power", "gust", "stiffness"):
+        for key in ("reynolds", "collision", "power", "gust", "stiffness", "rotation", "capture_stride"):
             for path in (f"state/fields/{key}", f"fields/{key}/values"):
                 if part.has_path(path):
                     v = part[path]
